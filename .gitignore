@@ -1,0 +1,22 @@
+.DS_Store
+
+# Entorno local
+.env
+.env.local
+.venv/
+__pycache__/
+*.pyc
+
+# Config local del asistente
+.claude/settings.local.json
+
+# Datos sensibles: estados de cuenta, movimientos procesados y analisis locales
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+notebooks/*
+!notebooks/.gitkeep
+
+# Salidas temporales
+*.log
