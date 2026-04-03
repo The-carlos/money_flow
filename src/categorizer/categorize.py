@@ -61,8 +61,9 @@ Categorias permitidas:
 Reglas:
 - Usa solo una categoria de la lista.
 - Si la descripcion o referencia no son suficientemente descriptivas, responde "No identificado".
-- "PAGO CUENTA DE TERCERO" o "SPEI ENVIADO" a personas -> Transferencias Personales.
-- Transferencias a cuentas propias, ahorro, inversion o fintech personales -> Ahorro e Inversiones.
+- "PAGO CUENTA DE TERCERO", "SPEI ENVIADO" y "SPEI RECIBIDO" deben clasificarse como Transferencias Personales.
+- SPEI es una transferencia interbancaria; no lo clasifiques como Ahorro e Inversiones solo por mencionar una institucion bancaria o fintech.
+- Usa Ahorro e Inversiones solo cuando el texto indique claramente ahorro, inversion, fondeo de cuenta propia o movimiento patrimonial y no sea simplemente un SPEI generico.
 - "RETIRO SIN TARJETA" -> Retiro en Efectivo.
 - "SU PAGO EN EFECTIVO EN COMERCIO" -> Depósito en Efectivo.
 - "PAGO DE NOMINA" -> Nómina e Ingresos.

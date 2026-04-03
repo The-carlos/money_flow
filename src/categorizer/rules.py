@@ -17,11 +17,11 @@ def auto_category(descripcion: str, referencia: str = "") -> str:
         (r"COMISION DE OP|SEGBBVA",                             "Comisiones Bancarias"),
         (r"RETIRO SIN TARJETA",                                 "Retiro en Efectivo"),
         (r"SU PAGO EN EFECTIVO",                                "Depósito en Efectivo"),
-        # Ahorro e Inversiones — SPEI hacia cuentas propias
-        (r"SPEI.*(albo|FONDEADORA|MERCADO.?PAGO|INBURSA|NU.?MEXICO|STORI)",
-                                                                "Ahorro e Inversiones"),
-        # Transferencias personales
+        # Transferencias interbancarias
         (r"PAGO CUENTA DE TERCERO|SPEI ",                       "Transferencias Personales"),
+        # Ahorro e Inversiones sin SPEI explicito
+        (r"\b(albo|FONDEADORA|MERCADO.?PAGO|INBURSA|NU.?MEXICO|STORI)\b",
+                                                                "Ahorro e Inversiones"),
         # Alimentación
         (r"TACO|REST\b|RESTAUR|UDON|SANBORNS|OXXO|MERPAGO\*COMIDA|TAQUER"
          r"|CAFE\b|CAFETERIA|LATTE|COMIDA|COMFYFOODS|RESTITACATLAN"
