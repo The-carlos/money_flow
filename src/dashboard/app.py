@@ -676,13 +676,15 @@ with tab_track:
             .sum()
             .sort_values("fecha")
         )
+        gasto_por_fecha["fecha_label"] = gasto_por_fecha["fecha"].astype(str)
         fig_track_line = px.line(
             gasto_por_fecha,
-            x="fecha",
+            x="fecha_label",
             y="monto",
             markers=True,
-            labels={"fecha": "Fecha", "monto": "Monto total ($)"},
+            labels={"fecha_label": "Fecha", "monto": "Monto total ($)"},
         )
+        fig_track_line.update_xaxes(type="category")
         fig_track_line.update_layout(height=320, margin=dict(t=10, b=10))
         st.plotly_chart(fig_track_line, use_container_width=True)
 
