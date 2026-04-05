@@ -671,9 +671,10 @@ with tab_track:
 
         st.subheader("Gasto por fecha")
         gasto_por_fecha = (
-            gdf_raw.assign(fecha=gdf_raw["fecha_dt"].dt.strftime("%Y-%m-%d"))
+            gdf_raw.assign(fecha=gdf_raw["fecha_dt"].dt.date)
             .groupby("fecha", as_index=False)["monto"]
             .sum()
+            .sort_values("fecha")
         )
         fig_track_line = px.line(
             gasto_por_fecha,
