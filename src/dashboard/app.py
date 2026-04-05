@@ -494,70 +494,66 @@ with tab_msi:
     t2.metric("Saldo Pendiente Total",  f"${msi['saldo_pendiente'].sum():,.2f}")
     t3.metric("Pago Este Mes Total",    f"${msi['pago_requerido'].sum():,.2f}")
 
-    col_chart, col_table = st.columns([1, 2])
+    msi_display = msi[[
+        "descripcion", "fecha_compra", "monto_original",
+        "saldo_pendiente", "pago_requerido", "progreso"
+    ]].copy()
+    cumplimiento_total = (
+        ((msi["monto_original"] - msi["saldo_pendiente"]) / msi["monto_original"]) * 100
+    ).replace([float("inf"), -float("inf")], pd.NA).fillna(0).round(1)
+    msi_display["cumplimiento_total"] = cumplimiento_total
+    msi_display.columns = [
+        "Descripción", "Fecha Compra", "Monto Original",
+        "Saldo Pendiente", "Pago Este Mes", "Progreso", "Cumplimiento Total"
+    ]
+    msi_display["Monto Original"]  = msi_display["Monto Original"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+    msi_display["Saldo Pendiente"] = msi_display["Saldo Pendiente"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+    msi_display["Pago Este Mes"]   = msi_display["Pago Este Mes"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+    msi_display["Cumplimiento Total"] = msi_display["Cumplimiento Total"].apply(lambda x: f"{x:.1f}%")
 
-    # Tabla interactiva con selección de filas
-    with col_table:
-        msi_display = msi[[
-            "descripcion", "fecha_compra", "monto_original",
-            "saldo_pendiente", "pago_requerido", "progreso"
-        ]].copy()
-        msi_display.columns = [
-            "Descripción", "Fecha Compra", "Monto Original",
-            "Saldo Pendiente", "Pago Este Mes", "Progreso"
-        ]
-        msi_display["Monto Original"]  = msi_display["Monto Original"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-        msi_display["Saldo Pendiente"] = msi_display["Saldo Pendiente"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-        msi_display["Pago Este Mes"]   = msi_display["Pago Este Mes"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+    selected = st.dataframe(
+        msi_display,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="multi-row",
+    )
 
-        selected = st.dataframe(
-            msi_display,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="multi-row",
-        )
+    sel_rows = selected.selection.rows if selected.selection.rows else list(range(len(msi)))
+    msi_sel = msi.iloc[sel_rows].copy()
+    msi_sel = msi_sel.sort_values("monto_original", ascending=False)
 
-    # Gráfico — filtra según selección
-    with col_chart:
-        sel_rows = selected.selection.rows if selected.selection.rows else list(range(len(msi)))
-        msi_sel = msi.iloc[sel_rows].copy()
-        msi_sel["label"] = msi_sel["descripcion"].str[:30]
-        msi_sel = msi_sel.sort_values("monto_original", ascending=True)
+    pagado = (msi_sel["monto_original"] - msi_sel["saldo_pendiente"]).clip(lower=0)
+    pct_pagado = ((pagado / msi_sel["monto_original"]) * 100).replace(
+        [float("inf"), -float("inf")], pd.NA
+    ).fillna(0).round(1)
+    pct_text = pct_pagado.apply(lambda p: f"{p:.0f}%")
 
-        pagado = (msi_sel["monto_original"] - msi_sel["saldo_pendiente"]).clip(lower=0)
-
-        fig_msi = go.Figure()
-        pct_pagado = (pagado / msi_sel["monto_original"] * 100).round(1)
-        pct_text = pct_pagado.apply(lambda p: f"{p:.0f}%" if p >= 5 else "")
-
-        fig_msi.add_trace(go.Bar(
-            name="Pagado",
-            y=msi_sel["label"],
-            x=pagado,
-            orientation="h",
-            marker_color="#4CAF50",
-            text=pct_text,
-            textposition="inside",
-            insidetextanchor="middle",
-            textfont=dict(color="white", size=12),
-        ))
-        fig_msi.add_trace(go.Bar(
-            name="Saldo pendiente",
-            y=msi_sel["label"],
-            x=msi_sel["saldo_pendiente"],
-            orientation="h",
-            marker_color="#FF9800",
-        ))
-        fig_msi.update_layout(
-            barmode="stack",
-            height=max(280, len(msi_sel) * 45 + 60),
-            margin=dict(t=10, b=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-            xaxis_title="Monto ($)",
-            yaxis_title="",
-        )
-        st.plotly_chart(fig_msi, use_container_width=True)
+    fig_msi = go.Figure()
+    fig_msi.add_trace(go.Bar(
+        name="Pagado",
+        x=msi_sel["descripcion"],
+        y=pagado,
+        marker_color="#4CAF50",
+        text=pct_text,
+        textposition="outside",
+    ))
+    fig_msi.add_trace(go.Bar(
+        name="Saldo pendiente",
+        x=msi_sel["descripcion"],
+        y=msi_sel["saldo_pendiente"],
+        marker_color="#FF9800",
+    ))
+    fig_msi.update_layout(
+        barmode="stack",
+        height=max(360, len(msi_sel) * 24 + 180),
+        margin=dict(t=10, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis_title="Descripción",
+        yaxis_title="Monto ($)",
+    )
+    fig_msi.update_xaxes(tickangle=-90)
+    st.plotly_chart(fig_msi, use_container_width=True)
 
 # ---- TRACKER ---------------------------------------------------------------
 TRACK_PATH = DATA_DIR / "track_ciclo.json"
