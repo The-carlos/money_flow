@@ -15,6 +15,7 @@ Configuración (variables de entorno o archivo .env):
 import json
 import logging
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -30,6 +31,10 @@ except ImportError:  # pragma: no cover - dependencia opcional
 # Rutas
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from tracker.categories import backfill_tracker_categories
+
 TRACK_PATH   = PROJECT_ROOT / "data" / "processed" / "track_ciclo.json"
 
 PRESUPUESTO_DEFAULT = 13168.0
@@ -49,12 +54,24 @@ logging.basicConfig(
 def _load() -> dict:
     if TRACK_PATH.exists():
         with open(TRACK_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    return {
+            state = json.load(f)
+    else:
+        state = {
         "presupuesto": PRESUPUESTO_DEFAULT,
         "gastos": [],
         "ciclo_inicio": datetime.now().isoformat(timespec="seconds"),
-    }
+        }
+
+    try:
+        state, changed, updated = backfill_tracker_categories(state)
+    except RuntimeError as exc:
+        logging.warning("Tracker: no se pudo recategorizar con OpenAI: %s", exc)
+        return state
+    if changed:
+        _save(state)
+        if updated:
+            logging.info("Tracker: %s gasto(s) existentes recategorizados con OpenAI.", updated)
+    return state
 
 
 def _save(state: dict) -> None:
@@ -112,7 +129,7 @@ async def cmd_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         categoria   = partes[1].strip()
     else:
         descripcion = resto.replace("_", " ").strip()
-        categoria   = ""
+        categoria   = "No identificado"
 
     state = _load()
     state["gastos"].append({
@@ -120,8 +137,20 @@ async def cmd_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "monto":       monto,
         "descripcion": descripcion,
         "categoria":   categoria,
+        "tipo":        "tracker",
+        "categoria_contexto": "",
     })
+    try:
+        state, changed, updated = backfill_tracker_categories(state)
+    except RuntimeError as exc:
+        logging.warning("Tracker: no se pudo categorizar el gasto con OpenAI: %s", exc)
+        changed, updated = False, 0
+    if updated:
+        logging.info("Tracker: %s gasto(s) recategorizados tras registrar un gasto.", updated)
     _save(state)
+
+    gasto_actual = state["gastos"][-1]
+    categoria = gasto_actual.get("categoria", "No identificado")
 
     gastado     = _total_gastado(state)
     presupuesto = state["presupuesto"]

@@ -6,6 +6,7 @@ saldo disponible y deuda en tarjeta de crédito.
 """
 
 import json
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -25,7 +26,46 @@ st.set_page_config(
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tracker.categories import backfill_tracker_categories
+
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
+
+st.markdown(
+    """
+    <style>
+    [data-testid="stMetricLabel"] {
+        font-size: 0.82rem !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 1.35rem !important;
+        line-height: 1.1 !important;
+    }
+    [data-testid="stMetricDelta"] {
+        font-size: 0.75rem !important;
+    }
+    div[data-testid="stAlert"] p {
+        font-size: 0.9rem !important;
+    }
+    @media (max-width: 900px) {
+        [data-testid="stMetricLabel"] {
+            font-size: 0.7rem !important;
+        }
+        [data-testid="stMetricValue"] {
+            font-size: 0.95rem !important;
+        }
+        [data-testid="stMetricDelta"] {
+            font-size: 0.65rem !important;
+        }
+        div[data-testid="stAlert"] p {
+            font-size: 0.78rem !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ---------------------------------------------------------------------------
 # Carga de datos
@@ -525,8 +565,19 @@ TRACK_PATH = DATA_DIR / "track_ciclo.json"
 def _load_track() -> dict:
     if TRACK_PATH.exists():
         with open(TRACK_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    return {"presupuesto": 13168.0, "gastos": [], "ciclo_inicio": None}
+            state = json.load(f)
+    else:
+        state = {"presupuesto": 13168.0, "gastos": [], "ciclo_inicio": None}
+
+    try:
+        state, changed, _ = backfill_tracker_categories(state)
+    except RuntimeError:
+        return state
+
+    if changed:
+        with open(TRACK_PATH, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+    return state
 
 with tab_track:
     track = _load_track()
@@ -574,14 +625,16 @@ with tab_track:
             st.dataframe(gdf, use_container_width=True, hide_index=True)
 
         with col_chart:
-            st.subheader("Por descripción")
+            st.subheader("Por categoría")
             gdf_raw = pd.DataFrame(gastos)
-            top = gdf_raw.groupby("descripcion")["monto"].sum().sort_values(ascending=True).tail(10)
+            gdf_raw["categoria"] = gdf_raw.get("categoria", "").fillna("").replace("", "No identificado")
+            gdf_raw["categoria"] = gdf_raw["categoria"].replace("Indefinido", "No identificado")
+            top = gdf_raw.groupby("categoria")["monto"].sum().sort_values(ascending=True)
             fig_track = px.bar(
                 top.reset_index(),
-                x="monto", y="descripcion",
+                x="monto", y="categoria",
                 orientation="h",
-                labels={"monto": "Total ($)", "descripcion": ""},
+                labels={"monto": "Total ($)", "categoria": ""},
                 text_auto=".2s",
             )
             fig_track.update_layout(height=300, margin=dict(t=10, b=10))
