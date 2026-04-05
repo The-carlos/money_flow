@@ -489,10 +489,15 @@ with tab_credito:
 with tab_msi:
     st.subheader("Deudas a Meses Sin Intereses")
 
-    t1, t2, t3 = st.columns(3)
-    t1.metric("Monto Original Total",  f"${msi['monto_original'].sum():,.2f}")
-    t2.metric("Saldo Pendiente Total",  f"${msi['saldo_pendiente'].sum():,.2f}")
-    t3.metric("Pago Este Mes Total",    f"${msi['pago_requerido'].sum():,.2f}")
+    monto_original_total = msi["monto_original"].sum()
+    saldo_pendiente_total = msi["saldo_pendiente"].sum()
+    total_pagado_msi = (monto_original_total - saldo_pendiente_total)
+
+    t1, t2, t3, t4 = st.columns(4)
+    t1.metric("Monto Original Total",  f"${monto_original_total:,.2f}")
+    t2.metric("Saldo Pendiente Total",  f"${saldo_pendiente_total:,.2f}")
+    t3.metric("Total Pagado",          f"${total_pagado_msi:,.2f}")
+    t4.metric("Pago Este Mes Total",   f"${msi['pago_requerido'].sum():,.2f}")
 
     msi_display = msi[[
         "descripcion", "fecha_compra", "monto_original",
