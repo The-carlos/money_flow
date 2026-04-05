@@ -471,19 +471,77 @@ with tab_credito:
         st.plotly_chart(fig_cred, use_container_width=True)
 
     st.subheader("Compras vs Pagos del Periodo")
-    comp_pago_df = pd.DataFrame([
-        {"Concepto": "Compras", "Monto": total_compras},
-        {"Concepto": "Pagos",   "Monto": total_pagos},
-    ])
+    credit_periods_df = credito_df.copy()
+    period_order = (
+        credit_periods_df.groupby("periodo")["fecha_oper"]
+        .max()
+        .sort_values()
+        .index
+        .tolist()
+    )
+    compras_periodo_df = (
+        credit_periods_df[credit_periods_df["tipo"] == "egreso"]
+        .groupby("periodo", as_index=False)["cargo"]
+        .sum()
+        .rename(columns={"cargo": "Monto"})
+    )
+    compras_periodo_df["Concepto"] = "Compras"
+    pagos_periodo_df = (
+        credit_periods_df[credit_periods_df["tipo"] == "ingreso"]
+        .groupby("periodo", as_index=False)["abono"]
+        .sum()
+        .rename(columns={"abono": "Monto"})
+    )
+    pagos_periodo_df["Concepto"] = "Pagos"
+    comp_pago_df = pd.concat([compras_periodo_df, pagos_periodo_df], ignore_index=True)
+    comp_pago_df["periodo"] = pd.Categorical(comp_pago_df["periodo"], categories=period_order, ordered=True)
+    comp_pago_df = comp_pago_df.sort_values(["periodo", "Concepto"])
     fig_cp = px.bar(
-        comp_pago_df, x="Concepto", y="Monto", barmode="group",
+        comp_pago_df, x="periodo", y="Monto", barmode="group",
         color="Concepto",
         color_discrete_map={"Compras": "#F44336", "Pagos": "#4CAF50"},
-        labels={"Monto": "Monto ($)", "Concepto": ""},
+        labels={"Monto": "Monto ($)", "periodo": ""},
         text_auto=".2s",
     )
-    fig_cp.update_layout(height=300, margin=dict(t=10, b=10), showlegend=False)
+    fig_cp.update_layout(height=320, margin=dict(t=10, b=10), legend_title="", xaxis_tickangle=-15)
     st.plotly_chart(fig_cp, use_container_width=True)
+
+    st.subheader("Compras Month over Month")
+    compras_mom = (
+        compras_periodo_df.copy()
+        .assign(periodo=pd.Categorical(compras_periodo_df["periodo"], categories=period_order, ordered=True))
+        .sort_values("periodo")
+    )
+    compras_mom["MontoAnterior"] = compras_mom["Monto"].shift(1)
+    compras_mom["VariacionPct"] = ((compras_mom["Monto"] - compras_mom["MontoAnterior"]) / compras_mom["MontoAnterior"] * 100)
+    compras_mom = compras_mom.dropna(subset=["VariacionPct"]).copy()
+
+    if compras_mom.empty:
+        st.info("Se necesitan al menos dos periodos de crédito para calcular el month over month de compras.")
+    else:
+        compras_mom["Color"] = compras_mom["VariacionPct"].apply(lambda x: "#F44336" if x > 0 else "#4CAF50")
+        fig_mom = go.Figure(go.Bar(
+            x=compras_mom["periodo"].astype(str),
+            y=compras_mom["VariacionPct"],
+            marker_color=compras_mom["Color"],
+            text=compras_mom["VariacionPct"].apply(lambda x: f"{x:+.1f}%"),
+            textposition="outside",
+            customdata=compras_mom[["Monto", "MontoAnterior"]],
+            hovertemplate=(
+                "Periodo: %{x}<br>"
+                "Variación: %{y:+.1f}%<br>"
+                "Compras actuales: $%{customdata[0]:,.2f}<br>"
+                "Compras previas: $%{customdata[1]:,.2f}<extra></extra>"
+            ),
+        ))
+        fig_mom.update_layout(
+            height=320,
+            margin=dict(t=10, b=10),
+            xaxis_title="Periodo",
+            yaxis_title="Variación (%)",
+            showlegend=False,
+        )
+        st.plotly_chart(fig_mom, use_container_width=True)
 
 # ---- MSI -------------------------------------------------------------------
 with tab_msi:
