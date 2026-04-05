@@ -610,25 +610,54 @@ with tab_track:
     if not gastos:
         st.info("No hay gastos registrados en este ciclo. Envía `/gasto 350 Uber` al bot de Telegram.")
     else:
-        gdf = pd.DataFrame(gastos)
-        gdf["categoria"] = gdf.get("categoria", "").fillna("").replace("", "No identificado")
-        gdf["categoria"] = gdf["categoria"].replace("Indefinido", "No identificado")
-        gdf["fecha"] = pd.to_datetime(gdf["fecha"]).dt.strftime("%Y-%m-%d %H:%M")
-        gdf = gdf[["fecha", "monto", "descripcion", "categoria"]].sort_values("fecha", ascending=False)
+        gdf_raw = pd.DataFrame(gastos)
+        gdf_raw["categoria"] = gdf_raw.get("categoria", "").fillna("").replace("", "No identificado")
+        gdf_raw["categoria"] = gdf_raw["categoria"].replace("Indefinido", "No identificado")
+        gdf_raw["fecha_dt"] = pd.to_datetime(gdf_raw["fecha"])
+
+        gdf = gdf_raw[["fecha_dt", "monto", "descripcion", "categoria"]].sort_values("fecha_dt", ascending=False).copy()
+        gdf["fecha"] = gdf["fecha_dt"].dt.strftime("%Y-%m-%d %H:%M")
+        gdf = gdf[["fecha", "monto", "descripcion", "categoria"]]
         gdf.columns = ["Fecha", "Monto", "Descripción", "Categoría"]
-        gdf["Monto"] = gdf["Monto"].apply(lambda x: f"${x:,.2f}")
 
         col_tbl, col_chart = st.columns([3, 2])
 
         with col_tbl:
             st.subheader(f"Gastos del ciclo ({len(gastos)})")
-            st.dataframe(gdf, use_container_width=True, hide_index=True)
+
+            if "track_sel_all" not in st.session_state:
+                st.session_state.track_sel_all = False
+
+            if st.button(
+                "Seleccionar todo" if not st.session_state.track_sel_all else "Deseleccionar todo",
+                key="track_select_toggle",
+            ):
+                st.session_state.track_sel_all = not st.session_state.track_sel_all
+
+            tracker_display = gdf.copy()
+            tracker_display.insert(0, "Sel", st.session_state.track_sel_all)
+
+            edited_tracker = st.data_editor(
+                tracker_display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Sel": st.column_config.CheckboxColumn("Sel", help="Selecciona para sumar", width="small"),
+                    "Monto": st.column_config.NumberColumn("Monto", format="$%.2f"),
+                },
+                disabled=["Fecha", "Monto", "Descripción", "Categoría"],
+            )
+
+            sel_tracker = edited_tracker[edited_tracker["Sel"] == True]
+            if not sel_tracker.empty:
+                total_sel = sel_tracker["Monto"].fillna(0).sum()
+                st.info(
+                    f"**{len(sel_tracker)} gasto(s) seleccionado(s)** — "
+                    f"Total: **${total_sel:,.2f}**"
+                )
 
         with col_chart:
             st.subheader("Por categoría")
-            gdf_raw = pd.DataFrame(gastos)
-            gdf_raw["categoria"] = gdf_raw.get("categoria", "").fillna("").replace("", "No identificado")
-            gdf_raw["categoria"] = gdf_raw["categoria"].replace("Indefinido", "No identificado")
             top = gdf_raw.groupby("categoria")["monto"].sum().sort_values(ascending=True)
             fig_track = px.bar(
                 top.reset_index(),
@@ -639,6 +668,22 @@ with tab_track:
             )
             fig_track.update_layout(height=300, margin=dict(t=10, b=10))
             st.plotly_chart(fig_track, use_container_width=True)
+
+        st.subheader("Gasto por fecha")
+        gasto_por_fecha = (
+            gdf_raw.assign(fecha=gdf_raw["fecha_dt"].dt.strftime("%Y-%m-%d"))
+            .groupby("fecha", as_index=False)["monto"]
+            .sum()
+        )
+        fig_track_line = px.line(
+            gasto_por_fecha,
+            x="fecha",
+            y="monto",
+            markers=True,
+            labels={"fecha": "Fecha", "monto": "Monto total ($)"},
+        )
+        fig_track_line.update_layout(height=320, margin=dict(t=10, b=10))
+        st.plotly_chart(fig_track_line, use_container_width=True)
 
     st.divider()
     st.caption("Comandos del bot de Telegram: `/gasto 350 Uber` · `/status` · `/update_presupuesto 14000` · `/reset`")
