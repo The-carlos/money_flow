@@ -36,3 +36,28 @@ def backfill_tracker_categories(state: dict) -> tuple[dict, bool, int]:
             changed = True
 
     return state, changed, updated
+
+
+def classify_tracker_expense(
+    *,
+    descripcion: str,
+    monto: float,
+    categoria_contexto: str = "",
+) -> str:
+    rows = [{
+        "descripcion": descripcion,
+        "categoria_contexto": categoria_contexto,
+        "tipo": "tracker",
+        "monto": monto,
+        "categoria": "No identificado",
+    }]
+    categoria_map = categorize_rows(
+        rows,
+        description_key="descripcion",
+        reference_key="categoria_contexto",
+        type_key="tipo",
+        amount_key="monto",
+        category_key="categoria",
+        batch_size_env="OPENAI_CATEGORIZE_BATCH",
+    )
+    return categoria_map.get(0, "No identificado")
