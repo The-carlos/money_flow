@@ -29,6 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tracker.categories import backfill_tracker_categories
+from categorizer.rules import auto_category
 
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 
@@ -246,6 +247,26 @@ mask_all = (
 )
 filtered_all = df_all[mask_all].copy()
 
+
+def _filter_msi(df_msi: pd.DataFrame) -> pd.DataFrame:
+    if df_msi.empty:
+        return df_msi.copy()
+
+    msi_filtered = df_msi.copy()
+    msi_filtered["categoria"] = msi_filtered["descripcion"].fillna("").apply(
+        lambda desc: auto_category(desc, "")
+    )
+
+    producto_ok = "crédito" in sel_producto
+    tipo_ok = "egreso" in sel_tipo
+    if not (producto_ok and tipo_ok):
+        return msi_filtered.iloc[0:0].copy()
+
+    return msi_filtered[msi_filtered["categoria"].isin(sel_cats)].copy()
+
+
+msi_filtered = _filter_msi(msi)
+
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
@@ -264,7 +285,9 @@ with tab_res:
     egresos = filtered[filtered["tipo"] == "egreso"]
 
     def _ing_egr_chart(periodos: list[str], producto: str, titulo: str):
-        data = df_all[df_all["periodo"].isin(periodos) & (df_all["producto"] == producto)]
+        data = filtered_all[
+            filtered_all["periodo"].isin(periodos) & (filtered_all["producto"] == producto)
+        ]
         periodos_ord = sorted(data["periodo"].unique())
         ing = data[data["tipo"] == "ingreso"].groupby("periodo")["abono"].sum().rename("Ingresos")
         egr = data[data["tipo"] == "egreso"].groupby("periodo")["cargo"].sum().rename("Egresos")
@@ -298,7 +321,7 @@ with tab_res:
     limite_credito_latest = metro_latest.get("limite_credito", 0) or 0
 
     # Compras y pagos del periodo de crédito seleccionado (para desglose)
-    cred_periodo = df[df["producto"] == "crédito"]
+    cred_periodo = filtered[filtered["producto"] == "crédito"]
     compras_periodo = cred_periodo[cred_periodo["tipo"] == "egreso"]["cargo"].sum()
     pagos_periodo   = cred_periodo[cred_periodo["tipo"] == "ingreso"]["abono"].sum()
 
@@ -395,7 +418,7 @@ with tab_mov:
 
 # ---- DÉBITO ----------------------------------------------------------------
 with tab_debito:
-    debito_df   = df[df["producto"] == "débito"].copy()
+    debito_df   = filtered[filtered["producto"] == "débito"].copy()
     egresos_deb = debito_df[debito_df["tipo"] == "egreso"]
 
     col1, col2 = st.columns(2)
@@ -427,7 +450,7 @@ with tab_debito:
 
 # ---- CRÉDITO ---------------------------------------------------------------
 with tab_credito:
-    credito_df   = df[df["producto"] == "crédito"].copy()
+    credito_df   = filtered[filtered["producto"] == "crédito"].copy()
     egresos_cred = credito_df[credito_df["tipo"] == "egreso"]
 
     total_compras = egresos_cred["cargo"].sum()
@@ -547,76 +570,79 @@ with tab_credito:
 with tab_msi:
     st.subheader("Deudas a Meses Sin Intereses")
 
-    monto_original_total = msi["monto_original"].sum()
-    saldo_pendiente_total = msi["saldo_pendiente"].sum()
+    monto_original_total = msi_filtered["monto_original"].sum()
+    saldo_pendiente_total = msi_filtered["saldo_pendiente"].sum()
     total_pagado_msi = (monto_original_total - saldo_pendiente_total)
 
     t1, t2, t3, t4 = st.columns(4)
     t1.metric("Monto Original Total",  f"${monto_original_total:,.2f}")
     t2.metric("Saldo Pendiente Total",  f"${saldo_pendiente_total:,.2f}")
     t3.metric("Total Pagado",          f"${total_pagado_msi:,.2f}")
-    t4.metric("Pago Este Mes Total",   f"${msi['pago_requerido'].sum():,.2f}")
+    t4.metric("Pago Este Mes Total",   f"${msi_filtered['pago_requerido'].sum():,.2f}")
 
-    msi_display = msi[[
+    if msi_filtered.empty:
+        st.info("No hay planes MSI que coincidan con los filtros actuales.")
+    else:
+        msi_display = msi_filtered[[
         "descripcion", "fecha_compra", "monto_original",
         "saldo_pendiente", "pago_requerido", "progreso"
-    ]].copy()
-    cumplimiento_total = (
-        ((msi["monto_original"] - msi["saldo_pendiente"]) / msi["monto_original"]) * 100
-    ).replace([float("inf"), -float("inf")], pd.NA).fillna(0).round(1)
-    msi_display["cumplimiento_total"] = cumplimiento_total
-    msi_display.columns = [
+        ]].copy()
+        cumplimiento_total = (
+            ((msi_filtered["monto_original"] - msi_filtered["saldo_pendiente"]) / msi_filtered["monto_original"]) * 100
+        ).replace([float("inf"), -float("inf")], pd.NA).fillna(0).round(1)
+        msi_display["cumplimiento_total"] = cumplimiento_total
+        msi_display.columns = [
         "Descripción", "Fecha Compra", "Monto Original",
         "Saldo Pendiente", "Pago Este Mes", "Progreso", "Cumplimiento Total"
-    ]
-    msi_display["Monto Original"]  = msi_display["Monto Original"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-    msi_display["Saldo Pendiente"] = msi_display["Saldo Pendiente"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-    msi_display["Pago Este Mes"]   = msi_display["Pago Este Mes"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-    msi_display["Cumplimiento Total"] = msi_display["Cumplimiento Total"].apply(lambda x: f"{x:.1f}%")
+        ]
+        msi_display["Monto Original"]  = msi_display["Monto Original"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+        msi_display["Saldo Pendiente"] = msi_display["Saldo Pendiente"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+        msi_display["Pago Este Mes"]   = msi_display["Pago Este Mes"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+        msi_display["Cumplimiento Total"] = msi_display["Cumplimiento Total"].apply(lambda x: f"{x:.1f}%")
 
-    selected = st.dataframe(
-        msi_display,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="multi-row",
-    )
+        selected = st.dataframe(
+            msi_display,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="multi-row",
+        )
 
-    sel_rows = selected.selection.rows if selected.selection.rows else list(range(len(msi)))
-    msi_sel = msi.iloc[sel_rows].copy()
-    msi_sel = msi_sel.sort_values("monto_original", ascending=False)
+        sel_rows = selected.selection.rows if selected.selection.rows else list(range(len(msi_filtered)))
+        msi_sel = msi_filtered.iloc[sel_rows].copy()
+        msi_sel = msi_sel.sort_values("monto_original", ascending=False)
 
-    pagado = (msi_sel["monto_original"] - msi_sel["saldo_pendiente"]).clip(lower=0)
-    pct_pagado = ((pagado / msi_sel["monto_original"]) * 100).replace(
-        [float("inf"), -float("inf")], pd.NA
-    ).fillna(0).round(1)
-    pct_text = pct_pagado.apply(lambda p: f"{p:.0f}%")
+        pagado = (msi_sel["monto_original"] - msi_sel["saldo_pendiente"]).clip(lower=0)
+        pct_pagado = ((pagado / msi_sel["monto_original"]) * 100).replace(
+            [float("inf"), -float("inf")], pd.NA
+        ).fillna(0).round(1)
+        pct_text = pct_pagado.apply(lambda p: f"{p:.0f}%")
 
-    fig_msi = go.Figure()
-    fig_msi.add_trace(go.Bar(
-        name="Pagado",
-        x=msi_sel["descripcion"],
-        y=pagado,
-        marker_color="#4CAF50",
-        text=pct_text,
-        textposition="outside",
-    ))
-    fig_msi.add_trace(go.Bar(
-        name="Saldo pendiente",
-        x=msi_sel["descripcion"],
-        y=msi_sel["saldo_pendiente"],
-        marker_color="#FF9800",
-    ))
-    fig_msi.update_layout(
-        barmode="stack",
-        height=max(360, len(msi_sel) * 24 + 180),
-        margin=dict(t=10, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        xaxis_title="Descripción",
-        yaxis_title="Monto ($)",
-    )
-    fig_msi.update_xaxes(tickangle=-90)
-    st.plotly_chart(fig_msi, use_container_width=True)
+        fig_msi = go.Figure()
+        fig_msi.add_trace(go.Bar(
+            name="Pagado",
+            x=msi_sel["descripcion"],
+            y=pagado,
+            marker_color="#4CAF50",
+            text=pct_text,
+            textposition="outside",
+        ))
+        fig_msi.add_trace(go.Bar(
+            name="Saldo pendiente",
+            x=msi_sel["descripcion"],
+            y=msi_sel["saldo_pendiente"],
+            marker_color="#FF9800",
+        ))
+        fig_msi.update_layout(
+            barmode="stack",
+            height=max(360, len(msi_sel) * 24 + 180),
+            margin=dict(t=10, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            xaxis_title="Descripción",
+            yaxis_title="Monto ($)",
+        )
+        fig_msi.update_xaxes(tickangle=-90)
+        st.plotly_chart(fig_msi, use_container_width=True)
 
 # ---- TRACKER ---------------------------------------------------------------
 TRACK_PATH = DATA_DIR / "track_ciclo.json"
