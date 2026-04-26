@@ -534,6 +534,20 @@ async def handle_expense_flow(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
 
+async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+
+    if _pending_reset_active(update):
+        await handle_confirmacion(update, context)
+        return
+
+    chat_id = str(update.effective_chat.id)
+    if _expense_flow_active(chat_id):
+        await handle_expense_flow(update, context)
+        return
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -556,8 +570,7 @@ def main() -> None:
     app.add_handler(CommandHandler("updatepresupuesto",   cmd_update_presupuesto))
     app.add_handler(CommandHandler("reset",               cmd_reset))
     app.add_handler(CommandHandler("info",                cmd_info))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_expense_flow))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confirmacion))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
 
     logging.info("Bot corriendo. Ctrl+C para detener.")
     app.run_polling()
