@@ -5,18 +5,17 @@ Comandos:
   /gasto 350 Uber          → registra un gasto
   /status                  → resumen del ciclo actual
   /update-presupuesto 14000 → cambia el presupuesto disponible
-  /reset                   → reinicia el ciclo (borra gastos)
+  /reset                   → cierra y archiva el ciclo actual
 
 Configuración (variables de entorno o archivo .env):
   TELEGRAM_TOKEN   → token del bot (obtenido de @BotFather)
   TELEGRAM_CHAT_ID → tu chat ID personal (obtenido de @userinfobot)
 """
 
-import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from telegram import Update
@@ -34,13 +33,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from tracker.categories import backfill_tracker_categories
+from tracker.storage import archive_cycle, load_json, save_json
 
 TRACK_PATH   = PROJECT_ROOT / "data" / "processed" / "track_ciclo.json"
+TRACK_HISTORY_DIR = PROJECT_ROOT / "data" / "processed" / "tracker_cycles"
 
 PRESUPUESTO_DEFAULT = 13168.0
+RESET_CONFIRM_WINDOW = timedelta(minutes=2)
 
 # Estado en memoria para confirmación de reset
-_pending_reset = False
+_pending_reset: dict | None = None
 
 logging.basicConfig(
     format="%(asctime)s — %(levelname)s — %(message)s",
@@ -52,15 +54,11 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 
 def _load() -> dict:
-    if TRACK_PATH.exists():
-        with open(TRACK_PATH, encoding="utf-8") as f:
-            state = json.load(f)
-    else:
-        state = {
+    state = load_json(TRACK_PATH, {
         "presupuesto": PRESUPUESTO_DEFAULT,
         "gastos": [],
         "ciclo_inicio": datetime.now().isoformat(timespec="seconds"),
-        }
+    })
 
     try:
         state, changed, updated = backfill_tracker_categories(state)
@@ -75,8 +73,7 @@ def _load() -> dict:
 
 
 def _save(state: dict) -> None:
-    with open(TRACK_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
+    save_json(TRACK_PATH, state)
 
 
 def _total_gastado(state: dict) -> float:
@@ -88,6 +85,30 @@ def _barra(gastado: float, presupuesto: float, width: int = 10) -> str:
     filled = round(pct * width)
     bar = "█" * filled + "░" * (width - filled)
     return f"[{bar}] {pct*100:.1f}%"
+
+
+def _new_cycle(presupuesto: float) -> dict:
+    return {
+        "presupuesto": presupuesto,
+        "gastos": [],
+        "ciclo_inicio": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _pending_reset_active(update: Update) -> bool:
+    global _pending_reset
+    if not _pending_reset:
+        return False
+    if _pending_reset.get("chat_id") != str(update.effective_chat.id):
+        return False
+    requested_at = _pending_reset.get("requested_at")
+    if not requested_at:
+        _pending_reset = None
+        return False
+    if datetime.now() - datetime.fromisoformat(requested_at) > RESET_CONFIRM_WINDOW:
+        _pending_reset = None
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +262,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/gasto 350 concepto_del_gasto - Categoria — Con categoría opcional\n"
         "/status — Resumen: gastado, disponible y últimos 5 gastos\n"
         "/update_presupuesto 14000 — Cambia el presupuesto del ciclo\n"
-        "/reset — Reinicia el ciclo (pide confirmación)\n"
+        "/reset — Cierra y archiva el ciclo actual (pide confirmación)\n"
         "/info — Muestra esta ayuda\n"
     )
     await update.message.reply_text(texto)
@@ -255,10 +276,20 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state = _load()
     n_gastos = len(state["gastos"])
     total    = _total_gastado(state)
-    _pending_reset = True
+    if state["gastos"]:
+        fechas = sorted(g["fecha"] for g in state["gastos"])
+        ciclo_ref = f"{fechas[0][:10]} → {fechas[-1][:10]}"
+    else:
+        ciclo_ref = "sin gastos"
+    _pending_reset = {
+        "chat_id": str(update.effective_chat.id),
+        "requested_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
     await update.message.reply_text(
-        f"⚠️ Vas a borrar {n_gastos} gastos (${total:,.2f} trackeados).\n"
+        f"⚠️ Vas a cerrar el ciclo actual ({ciclo_ref}) con {n_gastos} gastos "
+        f"y ${total:,.2f} trackeados.\n"
+        f"El historial se archivará y se abrirá un ciclo nuevo conservando el presupuesto actual.\n"
         f"¿Confirmas el reset? Responde y o n"
     )
 
@@ -267,24 +298,29 @@ async def handle_confirmacion(update: Update, context: ContextTypes.DEFAULT_TYPE
     global _pending_reset
     if not _authorized(update):
         return
-    if not _pending_reset:
+    if not _pending_reset_active(update):
         return
 
     respuesta = update.message.text.strip().lower()
     if respuesta == "y":
         state = _load()
         presupuesto_actual = state["presupuesto"]
-        _save({
-            "presupuesto":  presupuesto_actual,
-            "gastos":       [],
-            "ciclo_inicio": datetime.now().isoformat(timespec="seconds"),
-        })
-        _pending_reset = False
-        await update.message.reply_text(
-            f"🔄 Ciclo reiniciado. Presupuesto: ${presupuesto_actual:,.2f}"
-        )
+        archive = archive_cycle(state, TRACK_HISTORY_DIR)
+        _save(_new_cycle(presupuesto_actual))
+        _pending_reset = None
+        if archive:
+            await update.message.reply_text(
+                f"🔄 Ciclo archivado como *{archive['label']}*.\n"
+                f"Presupuesto conservado: ${presupuesto_actual:,.2f}",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                f"🔄 No había gastos por archivar. Ciclo reiniciado con presupuesto "
+                f"${presupuesto_actual:,.2f}"
+            )
     elif respuesta == "n":
-        _pending_reset = False
+        _pending_reset = None
         await update.message.reply_text("Cancelado. El ciclo sigue igual.")
 
 
