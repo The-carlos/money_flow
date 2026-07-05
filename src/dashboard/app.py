@@ -6,7 +6,11 @@ saldo disponible y deuda en tarjeta de crédito.
 """
 
 import json
+import hashlib
+import io
+import re
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pandas as pd
@@ -30,8 +34,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tracker.categories import backfill_tracker_categories
 from categorizer.rules import auto_category
+from extractor import pipeline
 
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
+RAW_DIR = PROJECT_ROOT / "data" / "raw"
+
+
+def _safe_upload_name(filename: str, file_hash: str) -> str:
+    stem = Path(filename).stem or "estado_cuenta"
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "estado_cuenta"
+    candidate = f"{stem}_{file_hash[:10]}.pdf"
+    return candidate
+
+
+def _save_uploaded_statement(uploaded_file) -> tuple[bool, str, str]:
+    content = uploaded_file.getvalue()
+    if not content.startswith(b"%PDF"):
+        return False, "", "El archivo seleccionado no parece ser un PDF válido."
+
+    file_hash = hashlib.sha256(content).hexdigest()
+    if file_hash in pipeline.processed_sha256_values():
+        return False, file_hash, "Este estado de cuenta ya fue procesado anteriormente."
+
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    target = RAW_DIR / _safe_upload_name(uploaded_file.name, file_hash)
+    target.write_bytes(content)
+    return True, file_hash, f"Archivo guardado en {target.name}."
 
 st.markdown(
     """
@@ -282,6 +310,63 @@ tab_res, tab_mov, tab_debito, tab_credito, tab_msi, tab_track = st.tabs([
 
 # ---- RESUMEN ---------------------------------------------------------------
 with tab_res:
+    st.subheader("Agregar estado de cuenta")
+    upload_result = st.session_state.pop("statement_upload_result", None)
+    if upload_result:
+        level, message, output = upload_result
+        if level == "success":
+            st.success(message)
+        else:
+            st.error(message)
+        if output:
+            with st.expander("Salida del procesamiento", expanded=(level != "success")):
+                st.code(output)
+
+    upload_col, action_col = st.columns([3, 1])
+    with upload_col:
+        uploaded_statement = st.file_uploader(
+            "Selecciona un PDF de BBVA",
+            type=["pdf"],
+            accept_multiple_files=False,
+            key="statement_upload",
+        )
+    with action_col:
+        st.write("")
+        process_upload = st.button(
+            "Procesar PDF",
+            disabled=uploaded_statement is None,
+            use_container_width=True,
+        )
+
+    if process_upload and uploaded_statement is not None:
+        saved, uploaded_hash, message = _save_uploaded_statement(uploaded_statement)
+        if not saved:
+            st.warning(message)
+        else:
+            with st.spinner("Procesando estado de cuenta..."):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    pipeline.run()
+                processed = uploaded_hash in pipeline.processed_sha256_values()
+
+            if processed:
+                st.cache_data.clear()
+                st.session_state.statement_upload_result = (
+                    "success",
+                    "Estado de cuenta procesado correctamente.",
+                    output.getvalue() or "Procesamiento completado.",
+                )
+                st.rerun()
+            else:
+                st.session_state.statement_upload_result = (
+                    "error",
+                    "No se pudo procesar el PDF. Revisa la salida del pipeline.",
+                    output.getvalue() or "El pipeline no devolvió salida.",
+                )
+                st.rerun()
+
+    st.divider()
+
     egresos = filtered[filtered["tipo"] == "egreso"]
 
     def _ing_egr_chart(periodos: list[str], producto: str, titulo: str):

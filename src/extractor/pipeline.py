@@ -19,10 +19,13 @@ from pathlib import Path
 
 import pdfplumber
 
-from pdf_parser    import extract_movements
-from credit_parser import extract_credit_data, save_msi_csv
+try:
+    from .pdf_parser import extract_movements
+    from .credit_parser import extract_credit_data, save_msi_csv
+except ImportError:  # pragma: no cover - permite ejecutar este archivo como script
+    from pdf_parser import extract_movements
+    from credit_parser import extract_credit_data, save_msi_csv
 
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "categorizer"))
 from rules import auto_category
 
@@ -146,6 +149,16 @@ def _processed_signatures(manifest: dict) -> set[tuple]:
             entry.get("mtime", ""),
         ))
     return signatures
+
+
+def processed_sha256_values() -> set[str]:
+    """Devuelve hashes SHA-256 de PDFs ya procesados en el manifest."""
+    manifest = _load_manifest()
+    return {
+        str(entry.get("sha256", ""))
+        for entry in manifest.get("processed", [])
+        if entry.get("sha256")
+    }
 
 
 # ---------------------------------------------------------------------------
