@@ -731,6 +731,7 @@ with tab_msi:
 
 # ---- TRACKER ---------------------------------------------------------------
 TRACK_PATH = DATA_DIR / "track_ciclo.json"
+TRACK_HISTORY_DIR = DATA_DIR / "tracker_cycles"
 
 def _load_track() -> dict:
     if TRACK_PATH.exists():
@@ -749,8 +750,87 @@ def _load_track() -> dict:
             json.dump(state, f, indent=2, ensure_ascii=False)
     return state
 
+
+def _load_tracker_history() -> list[dict]:
+    if not TRACK_HISTORY_DIR.exists():
+        return []
+
+    archives = []
+    for path in sorted(TRACK_HISTORY_DIR.glob("*.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                archive = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        archive["_source_path"] = str(path)
+        archives.append(archive)
+
+    return sorted(
+        archives,
+        key=lambda item: item.get("ultimo_gasto") or item.get("closed_at") or "",
+        reverse=True,
+    )
+
+
+def _tracker_label(period: dict) -> str:
+    if period["is_current"]:
+        start = (period["state"].get("ciclo_inicio") or "")[:10]
+        return f"Actual · desde {start}" if start else "Actual"
+
+    state = period["state"]
+    label = state.get("label") or state.get("id") or "Periodo cerrado"
+    start = (state.get("primer_gasto") or "")[:10]
+    end = (state.get("ultimo_gasto") or "")[:10]
+    if start and end:
+        return f"{label} · {start} a {end}"
+    return label
+
+
+def _tracker_periods(current_track: dict, history: list[dict]) -> list[dict]:
+    periods = [{
+        "id": "current",
+        "is_current": True,
+        "state": current_track,
+    }]
+    for archive in history:
+        periods.append({
+            "id": archive.get("id") or archive.get("_source_path", ""),
+            "is_current": False,
+            "state": archive,
+        })
+    return periods
+
+
+def _tracker_period_summary(periods: list[dict]) -> pd.DataFrame:
+    rows = []
+    for period in reversed(periods):
+        state = period["state"]
+        gastos = state.get("gastos", [])
+        total = float(state.get("total_gastado", 0) or 0)
+        if not total:
+            total = sum(float(g.get("monto", 0) or 0) for g in gastos)
+        rows.append({
+            "Periodo": _tracker_label(period),
+            "Total": total,
+            "Tipo": "Actual" if period["is_current"] else "Cerrado",
+            "Movimientos": len(gastos),
+        })
+    return pd.DataFrame(rows)
+
+
 with tab_track:
     track = _load_track()
+    history = _load_tracker_history()
+    tracker_periods = _tracker_periods(track, history)
+    selected_period = st.selectbox(
+        "Periodo del tracker",
+        tracker_periods,
+        format_func=_tracker_label,
+        key="tracker_period",
+    )
+
+    track = selected_period["state"]
+    is_current_period = selected_period["is_current"]
     presupuesto  = track.get("presupuesto", 13168.0)
     gastos       = track.get("gastos", [])
     ciclo_inicio = track.get("ciclo_inicio", "—")
@@ -764,9 +844,9 @@ with tab_track:
     tr2.metric("Gastado (tracker)", f"${total_gasto:,.2f}", f"{pct_usado:.1f}% usado", delta_color="inverse")
     tr3.metric("Disponible", f"${restante:,.2f}", delta_color="normal")
 
-    if pct_usado >= 100:
+    if is_current_period and pct_usado >= 100:
         st.error("🚨 Presupuesto excedido")
-    elif pct_usado >= 80:
+    elif is_current_period and pct_usado >= 80:
         st.warning("⚠️ Más del 80% del presupuesto usado — considera frenar.")
 
     # Barra de progreso
@@ -774,11 +854,16 @@ with tab_track:
 
     if ciclo_inicio and ciclo_inicio != "—":
         st.caption(f"Ciclo iniciado: {ciclo_inicio[:10]}")
+    if not is_current_period and track.get("closed_at"):
+        st.caption(f"Ciclo cerrado: {track['closed_at'][:10]}")
 
     st.divider()
 
     if not gastos:
-        st.info("No hay gastos registrados en este ciclo. Envía `/gasto 350 Uber` al bot de Telegram.")
+        if is_current_period:
+            st.info("No hay gastos registrados en este ciclo. Envía `/gasto 350 Uber` al bot de Telegram.")
+        else:
+            st.info("Este periodo cerrado no tiene gastos registrados.")
     else:
         gdf_raw = pd.DataFrame(gastos)
         gdf_raw["categoria"] = gdf_raw.get("categoria", "").fillna("").replace("", "No identificado")
@@ -857,6 +942,30 @@ with tab_track:
         fig_track_line.update_xaxes(type="category")
         fig_track_line.update_layout(height=320, margin=dict(t=10, b=10))
         st.plotly_chart(fig_track_line, use_container_width=True)
+
+    st.divider()
+    period_summary = _tracker_period_summary(tracker_periods)
+    st.subheader("Gasto por periodo")
+    if period_summary.empty:
+        st.info("No hay periodos del tracker para comparar.")
+    else:
+        fig_periods = px.bar(
+            period_summary,
+            x="Periodo",
+            y="Total",
+            color="Tipo",
+            color_discrete_map={"Actual": "#2196F3", "Cerrado": "#607D8B"},
+            text_auto=".2s",
+            hover_data={"Movimientos": True, "Tipo": True, "Periodo": False},
+            labels={"Total": "Total gastado ($)", "Periodo": ""},
+        )
+        fig_periods.update_layout(
+            height=max(320, len(period_summary) * 28 + 220),
+            margin=dict(t=10, b=10),
+            legend_title="",
+            xaxis_tickangle=-30,
+        )
+        st.plotly_chart(fig_periods, use_container_width=True)
 
     st.divider()
     st.caption("Comandos del bot de Telegram: `/gasto 350 Uber` · `/status` · `/update_presupuesto 14000` · `/reset`")
