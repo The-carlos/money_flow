@@ -182,12 +182,12 @@ def summarize_diff(diff_df: pd.DataFrame) -> dict[str, float | int]:
 def style_diff_frame(diff_df: pd.DataFrame) -> pd.io.formats.style.Styler:
     def row_style(row: pd.Series) -> list[str]:
         if row["status"] == "match":
-            color = "background-color: #E8F5E9"
+            style = "background-color: #B7E4C7; color: #0B2E13; border-left: 5px solid #2D6A4F"
         elif row["status"] == "estado_only":
-            color = "background-color: #FFEBEE"
+            style = "background-color: #F8B4B4; color: #3B0A0A; border-left: 5px solid #B91C1C"
         else:
-            color = "background-color: #FFEBEE"
-        return [color] * len(row)
+            style = "background-color: #F8B4B4; color: #3B0A0A; border-left: 5px solid #B91C1C"
+        return [style] * len(row)
 
     return (
         diff_df.style
