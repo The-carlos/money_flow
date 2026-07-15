@@ -35,6 +35,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tracker.categories import backfill_tracker_categories
 from categorizer.rules import auto_category
 from extractor import pipeline
+from dashboard.tracker_diff import (
+    build_diff_frame,
+    credit_expenses_for_period,
+    match_expenses,
+    style_diff_frame,
+    summarize_diff,
+    tracker_expenses_for_period,
+)
 
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
@@ -299,13 +307,14 @@ msi_filtered = _filter_msi(msi)
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab_res, tab_mov, tab_debito, tab_credito, tab_msi, tab_track = st.tabs([
+tab_res, tab_mov, tab_debito, tab_credito, tab_msi, tab_track, tab_diff = st.tabs([
     "📊 Resumen",
     "📋 Movimientos",
     "🏦 Débito",
     "💳 Crédito",
     "📅 MSI",
     "🎯 Tracker",
+    "Diff",
 ])
 
 # ---- RESUMEN ---------------------------------------------------------------
@@ -969,3 +978,99 @@ with tab_track:
 
     st.divider()
     st.caption("Comandos del bot de Telegram: `/gasto 350 Uber` · `/status` · `/update_presupuesto 14000` · `/reset`")
+
+# ---- DIFF ------------------------------------------------------------------
+with tab_diff:
+    st.subheader("Estado de cuenta vs Tracker")
+
+    diff_track = _load_track()
+    diff_history = _load_tracker_history()
+    diff_tracker_periods = _tracker_periods(diff_track, diff_history)
+
+    diff_col1, diff_col2, diff_col3, diff_col4 = st.columns([3, 3, 1, 1])
+    with diff_col1:
+        diff_credit_period = st.selectbox(
+            "Periodo estado de cuenta",
+            periodos_cred or [""],
+            key="diff_credit_period",
+            disabled=not periodos_cred,
+        )
+    with diff_col2:
+        diff_tracker_period = st.selectbox(
+            "Periodo tracker",
+            diff_tracker_periods,
+            format_func=_tracker_label,
+            key="diff_tracker_period",
+        )
+    with diff_col3:
+        date_tolerance = st.number_input(
+            "Días",
+            min_value=0,
+            max_value=7,
+            value=1,
+            step=1,
+            help="Tolerancia de fecha para considerar un match.",
+        )
+    with diff_col4:
+        amount_tolerance = st.number_input(
+            "Monto",
+            min_value=0.0,
+            max_value=1000.0,
+            value=0.01,
+            step=0.01,
+            format="%.2f",
+            help="Tolerancia de monto para considerar un match.",
+        )
+
+    if not periodos_cred:
+        st.info("No hay periodos de crédito disponibles para comparar.")
+    elif not diff_tracker_periods:
+        st.info("No hay periodos del tracker disponibles para comparar.")
+    else:
+        statement_items = credit_expenses_for_period(df_all, diff_credit_period)
+        tracker_items = tracker_expenses_for_period(
+            diff_tracker_period,
+            _tracker_label(diff_tracker_period),
+        )
+        matches = match_expenses(
+            statement_items,
+            tracker_items,
+            date_tolerance_days=int(date_tolerance),
+            amount_tolerance=float(amount_tolerance),
+        )
+        diff_df = build_diff_frame(matches)
+        summary = summarize_diff(diff_df)
+
+        met1, met2, met3, met4, met5 = st.columns(5)
+        met1.metric("Matches", f"{summary['matched_count']}", f"${summary['matched_amount']:,.2f}")
+        met2.metric("Solo estado", f"{summary['statement_only_count']}", f"${summary['statement_only_amount']:,.2f}", delta_color="inverse")
+        met3.metric("Solo tracker", f"{summary['tracker_only_count']}", f"${summary['tracker_only_amount']:,.2f}", delta_color="inverse")
+        met4.metric("Estado total", f"${sum(item.monto for item in statement_items):,.2f}")
+        met5.metric("Tracker total", f"${sum(item.monto for item in tracker_items):,.2f}")
+
+        if diff_df.empty:
+            st.info("No hay movimientos para comparar con los periodos seleccionados.")
+        else:
+            status_filter = st.radio(
+                "Mostrar",
+                ["Todos", "Matches", "Diferencias"],
+                index=0,
+                horizontal=True,
+                key="diff_status_filter",
+            )
+            display_df = diff_df.copy()
+            if status_filter == "Matches":
+                display_df = display_df[display_df["status"] == "match"]
+            elif status_filter == "Diferencias":
+                display_df = display_df[display_df["status"] != "match"]
+
+            st.dataframe(
+                style_diff_frame(display_df),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Estado Monto": st.column_config.NumberColumn("Estado Monto", format="$%.2f"),
+                    "Tracker Monto": st.column_config.NumberColumn("Tracker Monto", format="$%.2f"),
+                    "Diferencia": st.column_config.NumberColumn("Diferencia", format="$%.2f"),
+                },
+            )
