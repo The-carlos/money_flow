@@ -56,6 +56,10 @@ FREQUENT_CATEGORIES = [
     "Entretenimiento",
     "Servicios del Hogar y Telecomunicaciones",
 ]
+MONTH_LABELS = {
+    1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
+    7: "jul", 8: "ago", 9: "sep", 10: "oct", 11: "nov", 12: "dic",
+}
 
 # Estado en memoria para confirmación de reset
 _pending_reset: dict | None = None
@@ -102,6 +106,96 @@ def _barra(gastado: float, presupuesto: float, width: int = 10) -> str:
     filled = round(pct * width)
     bar = "█" * filled + "░" * (width - filled)
     return f"[{bar}] {pct*100:.1f}%"
+
+
+def _month_delta(year: int, month: int, delta: int) -> tuple[int, int]:
+    month += delta
+    while month > 12:
+        year += 1
+        month -= 12
+    while month < 1:
+        year -= 1
+        month += 12
+    return year, month
+
+
+def _cycle_bounds(today: datetime | None = None) -> tuple[datetime, datetime]:
+    today = today or datetime.now()
+    if today.day >= 10:
+        start = datetime(today.year, today.month, 10)
+        end_year, end_month = _month_delta(today.year, today.month, 1)
+        end = datetime(end_year, end_month, 9, 23, 59, 59)
+    else:
+        start_year, start_month = _month_delta(today.year, today.month, -1)
+        start = datetime(start_year, start_month, 10)
+        end = datetime(today.year, today.month, 9, 23, 59, 59)
+    return start, end
+
+
+def _format_cycle_date(value: datetime) -> str:
+    return f"{value.day:02d}/{MONTH_LABELS[value.month]}"
+
+
+def _cycle_progress(today: datetime, presupuesto: float, gastado: float) -> dict:
+    start, end = _cycle_bounds(today)
+    total_days = (end.date() - start.date()).days + 1
+    current_day = min(max((today.date() - start.date()).days + 1, 1), total_days)
+    daily_budget = presupuesto / total_days if total_days else 0
+    weekly_budget = daily_budget * 7
+    expected_today = daily_budget * current_day
+    actual_daily = gastado / current_day if current_day else 0
+    actual_weekly = actual_daily * 7
+    projected = actual_daily * total_days
+    difference = gastado - expected_today
+    return {
+        "start": start,
+        "end": end,
+        "current_day": current_day,
+        "total_days": total_days,
+        "daily_budget": daily_budget,
+        "weekly_budget": weekly_budget,
+        "expected_today": expected_today,
+        "actual_daily": actual_daily,
+        "actual_weekly": actual_weekly,
+        "projected": projected,
+        "difference": difference,
+    }
+
+
+def _category_status_lines(gastos: list[dict], total: float, top_n: int = 4) -> str:
+    if not gastos:
+        return "Por categoría\nSin gastos registrados."
+
+    totals: dict[str, float] = {}
+    for gasto in gastos:
+        category = (gasto.get("categoria") or "No identificado").strip() or "No identificado"
+        totals[category] = totals.get(category, 0.0) + float(gasto.get("monto", 0) or 0)
+
+    ordered = sorted(totals.items(), key=lambda item: item[1], reverse=True)
+    visible = ordered[:top_n]
+    rest = ordered[top_n:]
+    if rest:
+        visible.append(("Otros", sum(amount for _, amount in rest)))
+
+    lines = ["Por categoría"]
+    for category, amount in visible:
+        pct = (amount / total * 100) if total else 0
+        lines.append(f"{category[:22]:<22} ${amount:>10,.2f}  {pct:>5.1f}%")
+    return "\n".join(lines)
+
+
+def _status_alert(progress: dict, presupuesto: float) -> str:
+    difference = progress["difference"]
+    projected = progress["projected"]
+    daily_budget = progress["daily_budget"]
+
+    if presupuesto and projected > presupuesto * 1.05:
+        return f"🚨 Si sigues a este ritmo, cerrarías cerca de ${projected:,.2f}."
+    if difference > daily_budget:
+        return f"⚠️ Vas ${difference:,.2f} arriba del ritmo esperado."
+    if difference > 0:
+        return f"⚠️ Vas ligeramente arriba del ritmo esperado (${difference:,.2f})."
+    return f"✅ Vas ${abs(difference):,.2f} por debajo del ritmo esperado."
 
 
 def _new_cycle(presupuesto: float) -> dict:
@@ -256,29 +350,37 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not _authorized(update):
         return
 
-    state      = _load()
-    gastado    = _total_gastado(state)
+    state = _load()
+    gastado = _total_gastado(state)
     presupuesto = state["presupuesto"]
-    restante   = presupuesto - gastado
-    barra      = _barra(gastado, presupuesto)
-    inicio     = state.get("ciclo_inicio", "—")[:10]
-    n_gastos   = len(state["gastos"])
-
-    ultimos = ""
-    if state["gastos"]:
-        ultimos = "\n\nÚltimos 5 gastos:\n"
-        for g in reversed(state["gastos"][-5:]):
-            fecha = g["fecha"][5:10]  # MM-DD
-            ultimos += f"  • {fecha} ${g['monto']:,.2f} — {g['descripcion']}\n"
+    restante = presupuesto - gastado
+    barra = _barra(gastado, presupuesto)
+    n_gastos = len(state["gastos"])
+    progress = _cycle_progress(datetime.now(), presupuesto, gastado)
+    category_lines = _category_status_lines(state["gastos"], gastado)
+    alert = _status_alert(progress, presupuesto)
 
     texto = (
-        f"📊 Estado del ciclo (desde {inicio})\n\n"
+        "📊 Cómo vamos en el ciclo\n"
+        f"{_format_cycle_date(progress['start'])} → {_format_cycle_date(progress['end'])} · "
+        f"Día {progress['current_day']}/{progress['total_days']}\n\n"
         f"{barra}\n"
         f"Gastado:     ${gastado:,.2f}\n"
         f"Presupuesto: ${presupuesto:,.2f}\n"
         f"Restante:    ${restante:,.2f}\n"
-        f"Movimientos: {n_gastos}"
-        f"{ultimos}"
+        f"Movimientos: {n_gastos}\n\n"
+        "Ritmo\n"
+        f"Esperado a hoy: ${progress['expected_today']:,.2f}\n"
+        f"Real a hoy:     ${gastado:,.2f}\n"
+        f"Diferencia:     ${progress['difference']:+,.2f}\n"
+        f"Proyección:     ${progress['projected']:,.2f}\n\n"
+        "Presupuesto\n"
+        f"Diario:  ${progress['daily_budget']:,.2f}\n"
+        f"Semanal: ${progress['weekly_budget']:,.2f}\n"
+        f"Ritmo diario actual:  ${progress['actual_daily']:,.2f}\n"
+        f"Ritmo semanal actual: ${progress['actual_weekly']:,.2f}\n\n"
+        f"{category_lines}\n\n"
+        f"{alert}"
     )
     await update.message.reply_text(texto)
 
@@ -318,7 +420,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     texto = (
         "📖 Comandos disponibles\n\n"
         "/gasto — Inicia el flujo guiado para registrar un gasto\n"
-        "/status — Resumen: gastado, disponible y últimos 5 gastos\n"
+        "/status — Resumen del ciclo, ritmo de gasto y categorías\n"
         "/update_presupuesto 14000 — Cambia el presupuesto del ciclo\n"
         "/reset — Cierra y archiva el ciclo actual (pide confirmación)\n"
         "/cancelar — Cancela el registro guiado de un gasto\n"
