@@ -151,8 +151,44 @@ def load_metricas(periodo_key: str):
     return {}
 
 
+@st.cache_data
+def load_credit_metric_history(_mtime: float = 0) -> pd.DataFrame:
+    rows = []
+    for path in sorted(DATA_DIR.glob("metricas_credito_*.json")):
+        periodo_key = path.stem.replace("metricas_credito_", "")
+        with open(path, encoding="utf-8") as f:
+            metricas = json.load(f)
+
+        deuda_regular = metricas.get("pago_sin_intereses") or metricas.get("saldo_cargos_regulares") or 0
+        deuda_msi = metricas.get("saldo_msi") or 0
+        deuda_total = metricas.get("saldo_deudor_total") or (deuda_regular + deuda_msi)
+        limite = metricas.get("limite_credito") or 0
+        uso_tdc_pct = (deuda_total / limite * 100) if limite else 0
+        rows.append({
+            "periodo_key": periodo_key,
+            "Periodo": periodo_key,
+            "Deuda TDC Regular": float(deuda_regular or 0),
+            "Deuda MSI": float(deuda_msi or 0),
+            "Deuda total": float(deuda_total or 0),
+            "Límite de crédito": float(limite or 0),
+            "Uso TDC": round(float(uso_tdc_pct), 1),
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=[
+            "periodo_key", "Periodo", "Deuda TDC Regular", "Deuda MSI",
+            "Deuda total", "Límite de crédito", "Uso TDC",
+        ])
+    return pd.DataFrame(rows).sort_values("periodo_key")
+
+
 _csv_mtime = (DATA_DIR / "movimientos_consolidados.csv").stat().st_mtime
 df_all = load_data(_csv_mtime)
+_metricas_mtime = max(
+    (p.stat().st_mtime for p in DATA_DIR.glob("metricas_credito_*.json")),
+    default=0,
+)
+credit_metric_history = load_credit_metric_history(_metricas_mtime)
 
 # ---------------------------------------------------------------------------
 # Selector de periodo  (necesario antes de cargar MSI/métricas)
@@ -554,6 +590,93 @@ with tab_credito:
     m1.metric("Total Compras",        f"${total_compras:,.2f}", "salida",  delta_color="inverse")
     m2.metric("Total Pagos Recibidos",f"${total_pagos:,.2f}",   "entrada", delta_color="normal")
     m3.metric("Límite de Crédito",    f"${limite_credito:,.2f}")
+
+    st.subheader("Evolución de deuda y uso TDC")
+    credit_history = credit_metric_history.copy()
+    if sel_cred and not credit_history.empty:
+        selected_keys = []
+        for periodo in sel_cred:
+            periodo_df = df_all[
+                (df_all["periodo"] == periodo) &
+                (df_all["producto"] == "crédito")
+            ]
+            if not periodo_df.empty:
+                max_fecha = periodo_df["fecha_oper"].max()
+                selected_keys.append(f"{max_fecha.year}-{max_fecha.month:02d}")
+        credit_history = credit_history[credit_history["periodo_key"].isin(selected_keys)].copy()
+
+    if credit_history.empty:
+        st.info("No hay métricas históricas de crédito para graficar.")
+    else:
+        credit_history = credit_history.sort_values("periodo_key").copy()
+        latest_credit = credit_history.iloc[-1]
+        previous_credit = credit_history.iloc[-2] if len(credit_history) > 1 else None
+
+        def _money_delta(key: str):
+            if previous_credit is None:
+                return None
+            return f"${latest_credit[key] - previous_credit[key]:+,.2f} vs periodo anterior"
+
+        def _pct_delta(key: str):
+            if previous_credit is None:
+                return None
+            return f"{latest_credit[key] - previous_credit[key]:+.1f} pp vs periodo anterior"
+
+        h1, h2, h3, h4 = st.columns(4)
+        h1.metric("Deuda total", f"${latest_credit['Deuda total']:,.2f}", _money_delta("Deuda total"), delta_color="inverse")
+        h2.metric("Deuda TDC Regular", f"${latest_credit['Deuda TDC Regular']:,.2f}", _money_delta("Deuda TDC Regular"), delta_color="inverse")
+        h3.metric("Deuda MSI", f"${latest_credit['Deuda MSI']:,.2f}", _money_delta("Deuda MSI"), delta_color="inverse")
+        h4.metric("Uso TDC", f"{latest_credit['Uso TDC']:.1f}%", _pct_delta("Uso TDC"), delta_color="inverse")
+
+        debt_long = credit_history.melt(
+            id_vars=["periodo_key", "Periodo", "Uso TDC"],
+            value_vars=["Deuda total", "Deuda TDC Regular", "Deuda MSI"],
+            var_name="Indicador",
+            value_name="Monto",
+        )
+        fig_debt_history = px.bar(
+            debt_long,
+            x="Periodo",
+            y="Monto",
+            color="Indicador",
+            barmode="group",
+            text_auto=".2s",
+            color_discrete_map={
+                "Deuda total": "#263238",
+                "Deuda TDC Regular": "#D32F2F",
+                "Deuda MSI": "#F9A825",
+            },
+            labels={"Monto": "Monto ($)", "Periodo": ""},
+        )
+        fig_debt_history.add_trace(go.Scatter(
+            x=credit_history["Periodo"],
+            y=credit_history["Uso TDC"],
+            name="Uso TDC",
+            mode="lines+markers+text",
+            yaxis="y2",
+            line=dict(color="#1565C0", width=3),
+            marker=dict(size=8),
+            text=credit_history["Uso TDC"].apply(lambda value: f"{value:.1f}%"),
+            textposition="top center",
+            hovertemplate="Periodo: %{x}<br>Uso TDC: %{y:.1f}%<extra></extra>",
+        ))
+        fig_debt_history.update_layout(
+            height=380,
+            margin=dict(t=10, b=10),
+            legend_title="",
+            xaxis_tickangle=-15,
+            yaxis=dict(title="Deuda ($)"),
+            yaxis2=dict(
+                title="Uso TDC (%)",
+                overlaying="y",
+                side="right",
+                range=[0, max(100, credit_history["Uso TDC"].max() * 1.2)],
+            ),
+        )
+        st.plotly_chart(fig_debt_history, use_container_width=True)
+        st.caption(
+            "Sugerencia: observa la deuda total junto con la mezcla Regular/MSI; si el Uso TDC sube aunque las compras bajen, probablemente el saldo MSI está cargando demasiado el límite."
+        )
 
     col1, col2 = st.columns(2)
 
