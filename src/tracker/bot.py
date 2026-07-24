@@ -136,6 +136,16 @@ def _format_cycle_date(value: datetime) -> str:
     return f"{value.day:02d}/{MONTH_LABELS[value.month]}"
 
 
+def _date_in_current_cycle(value: datetime, today: datetime | None = None) -> bool:
+    start, end = _cycle_bounds(today)
+    return start.date() <= value.date() <= end.date()
+
+
+def _current_cycle_label(today: datetime | None = None) -> str:
+    start, end = _cycle_bounds(today)
+    return f"{_format_cycle_date(start)} → {_format_cycle_date(end)}"
+
+
 def _cycle_progress(today: datetime, presupuesto: float, gastado: float) -> dict:
     start, end = _cycle_bounds(today)
     total_days = (end.date() - start.date()).days + 1
@@ -539,9 +549,9 @@ async def handle_expense_flow(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if step == "date":
         if text == DATE_TODAY:
-            draft["fecha"] = _format_tracker_date(datetime.now())
+            selected_date = datetime.now()
         elif text == DATE_YESTERDAY:
-            draft["fecha"] = _format_tracker_date(datetime.now() - timedelta(days=1))
+            selected_date = datetime.now() - timedelta(days=1)
         elif text == DATE_OTHER:
             flow["step"] = "date_manual"
             await update.message.reply_text(
@@ -555,6 +565,14 @@ async def handle_expense_flow(update: Update, context: ContextTypes.DEFAULT_TYPE
                 reply_markup=_date_keyboard(),
             )
             return
+        if not _date_in_current_cycle(selected_date):
+            await update.message.reply_text(
+                f"La fecha {_format_tracker_date(selected_date)} está fuera del ciclo actual "
+                f"({_current_cycle_label()}). Elige otra fecha.",
+                reply_markup=_date_keyboard(),
+            )
+            return
+        draft["fecha"] = _format_tracker_date(selected_date)
         flow["step"] = "category"
         await update.message.reply_text(
             "Paso 4/5: elige una categoría o deja que el bot la clasifique.",
@@ -566,6 +584,13 @@ async def handle_expense_flow(update: Update, context: ContextTypes.DEFAULT_TYPE
         parsed = _parse_manual_date(text)
         if not parsed:
             await update.message.reply_text("Fecha inválida. Usa YYYY-MM-DD o DD/MM/YYYY.")
+            return
+        if not _date_in_current_cycle(parsed):
+            await update.message.reply_text(
+                f"Esa fecha está fuera del ciclo actual ({_current_cycle_label()}). "
+                "Escribe una fecha dentro del ciclo.",
+                reply_markup=ReplyKeyboardMarkup([[CONFIRM_CANCEL]], resize_keyboard=True, one_time_keyboard=True),
+            )
             return
         draft["fecha"] = _format_tracker_date(parsed)
         flow["step"] = "category"
