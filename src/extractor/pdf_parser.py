@@ -126,14 +126,14 @@ def _is_footer_line(cols: dict) -> bool:
     return any(k in all_text for k in skip_keywords)
 
 
-def extract_movements(pdf_path: str) -> tuple[list[Movement], float]:
+def extract_movements(pdf_path: str, password: str | None = None) -> tuple[list[Movement], float]:
     year = None
     saldo_inicial = 0.0
     movements: list[Movement] = []
     current: Optional[Movement] = None
     in_section = False
 
-    with pdfplumber.open(pdf_path) as pdf:
+    with pdfplumber.open(pdf_path, password=password) as pdf:
         if len(pdf.pages) < 2:
             raise ValueError("El estado de cuenta de debito no tiene suficientes paginas.")
         # Detectar año y saldo inicial en página 2

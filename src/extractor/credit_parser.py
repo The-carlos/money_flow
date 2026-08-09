@@ -164,7 +164,7 @@ def _is_continuation(cols: dict) -> bool:
 # Extracción principal
 # ---------------------------------------------------------------------------
 
-def extract_credit_data(pdf_path: str) -> tuple[list[CreditMovement], list[MsiPlan], float]:
+def extract_credit_data(pdf_path: str, password: str | None = None) -> tuple[list[CreditMovement], list[MsiPlan], float]:
     movements: list[CreditMovement] = []
     msi_plans: list[MsiPlan] = []
     adeudo_anterior = 0.0
@@ -176,7 +176,7 @@ def extract_credit_data(pdf_path: str) -> tuple[list[CreditMovement], list[MsiPl
     IN_REGULAR = 2
     state = IN_NONE
 
-    with pdfplumber.open(pdf_path) as pdf:
+    with pdfplumber.open(pdf_path, password=password) as pdf:
         if len(pdf.pages) < 2:
             raise ValueError("El estado de cuenta de credito no tiene suficientes paginas.")
         # Extraer adeudo anterior desde página 2

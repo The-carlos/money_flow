@@ -375,6 +375,14 @@ with tab_res:
             accept_multiple_files=False,
             key="statement_upload",
         )
+        statement_password = ""
+        if uploaded_statement is not None:
+            statement_password = st.text_input(
+                "Contraseña del PDF",
+                type="password",
+                help="Opcional. Se usa solo para procesar este archivo y no se guarda.",
+                key="statement_pdf_password",
+            )
     with action_col:
         st.write("")
         process_upload = st.button(
@@ -391,7 +399,7 @@ with tab_res:
             with st.spinner("Procesando estado de cuenta..."):
                 output = io.StringIO()
                 with redirect_stdout(output):
-                    pipeline.run()
+                    pipeline.run(pdf_password=statement_password)
                 processed = uploaded_hash in pipeline.processed_sha256_values()
 
             if processed:

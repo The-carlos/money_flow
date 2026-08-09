@@ -18,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 
 import pdfplumber
+from pdfminer.pdfdocument import PDFEncryptionError, PDFPasswordIncorrect
+from pdfplumber.utils.exceptions import PdfminerException
 
 try:
     from .pdf_parser import extract_movements
@@ -52,9 +54,9 @@ MESES_ES = {
 # Detección de tipo de PDF
 # ---------------------------------------------------------------------------
 
-def _detect_type(pdf_path: Path) -> str:
+def _detect_type(pdf_path: Path, password: str | None = None) -> str:
     """Devuelve 'credito' o 'debito' según el contenido del PDF."""
-    with pdfplumber.open(str(pdf_path)) as pdf:
+    with pdfplumber.open(str(pdf_path), password=password) as pdf:
         text = " ".join(
             p.extract_text() or "" for p in pdf.pages[:3]
         )
@@ -67,6 +69,34 @@ def _detect_type(pdf_path: Path) -> str:
         "Saldo cargo a meses",
     ]
     return "credito" if any(k in text for k in credit_keywords) else "debito"
+
+
+def _pdf_error_requires_password(error: Exception) -> bool:
+    candidates = [error]
+    candidates.extend(arg for arg in getattr(error, "args", ()) if isinstance(arg, Exception))
+
+    if any(isinstance(e, (PDFPasswordIncorrect, PDFEncryptionError)) for e in candidates):
+        return True
+
+    text = " ".join(str(e).lower() for e in candidates)
+    password_markers = ("password", "contraseña", "contrasena", "encrypt", "encrypted")
+    return any(marker in text for marker in password_markers)
+
+
+def _format_pdf_error(pdf_path: Path, error: Exception) -> str:
+    detail = str(error).strip()
+    if _pdf_error_requires_password(error):
+        message = (
+            f"No se pudo abrir '{pdf_path.name}'. "
+            "El PDF requiere contrasena o la contrasena capturada es incorrecta."
+        )
+    else:
+        message = (
+            f"No se pudo abrir '{pdf_path.name}' como PDF legible. "
+            "Verifica que el archivo no este corrupto, protegido con contrasena "
+            "o descargado incompleto."
+        )
+    return f"{message} Detalle: {detail}" if detail else message
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +226,8 @@ def _save_consolidated(rows: list[dict]) -> None:
 # Métricas de crédito
 # ---------------------------------------------------------------------------
 
-def _extract_metricas(pdf_path: Path, adeudo: float) -> dict:
-    with pdfplumber.open(str(pdf_path)) as pdf:
+def _extract_metricas(pdf_path: Path, adeudo: float, password: str | None = None) -> dict:
+    with pdfplumber.open(str(pdf_path), password=password) as pdf:
         if len(pdf.pages) < 2:
             raise ValueError(f"{pdf_path.name}: el PDF no tiene suficientes paginas para leer metricas.")
         page2 = pdf.pages[1].extract_text() or ""
@@ -233,8 +263,8 @@ def _extract_metricas(pdf_path: Path, adeudo: float) -> dict:
 # Procesamiento de un PDF
 # ---------------------------------------------------------------------------
 
-def _process_debito(pdf_path: Path) -> list[dict]:
-    movs, saldo_inicial = extract_movements(str(pdf_path))
+def _process_debito(pdf_path: Path, password: str | None = None) -> list[dict]:
+    movs, saldo_inicial = extract_movements(str(pdf_path), password=password)
     if not movs:
         return []
 
@@ -265,8 +295,8 @@ def _process_debito(pdf_path: Path) -> list[dict]:
     return rows
 
 
-def _process_credito(pdf_path: Path) -> list[dict]:
-    movs, plans, adeudo = extract_credit_data(str(pdf_path))
+def _process_credito(pdf_path: Path, password: str | None = None) -> list[dict]:
+    movs, plans, adeudo = extract_credit_data(str(pdf_path), password=password)
     if not movs:
         return []
 
@@ -278,7 +308,7 @@ def _process_credito(pdf_path: Path) -> list[dict]:
     msi_out = PROCESSED_DIR / f"msi_activos_{key}.csv"
     save_msi_csv(plans, str(msi_out))
 
-    metricas = _extract_metricas(pdf_path, adeudo)
+    metricas = _extract_metricas(pdf_path, adeudo, password=password)
     metro_out = PROCESSED_DIR / f"metricas_credito_{key}.json"
     with open(metro_out, "w", encoding="utf-8") as f:
         json.dump(metricas, f, indent=2)
@@ -314,7 +344,7 @@ def _process_credito(pdf_path: Path) -> list[dict]:
 # Main
 # ---------------------------------------------------------------------------
 
-def run(force_all: bool = False) -> None:
+def run(force_all: bool = False, pdf_password: str | None = None) -> None:
     manifest = {"processed": []} if force_all else _load_manifest()
     done_signatures = set() if force_all else _processed_signatures(manifest)
 
@@ -338,17 +368,21 @@ def run(force_all: bool = False) -> None:
     existing_keys = {_row_key(r) for r in existing_rows}
 
     total_added = 0
+    pdf_password = pdf_password or None
 
     for pdf_path in new_pdfs:
         print(f"\n📄 {pdf_path.name}")
-        kind = _detect_type(pdf_path)
-        print(f"  Tipo detectado: {kind}")
-
         try:
+            kind = _detect_type(pdf_path, password=pdf_password)
+            print(f"  Tipo detectado: {kind}")
+
             if kind == "credito":
-                new_rows = _process_credito(pdf_path)
+                new_rows = _process_credito(pdf_path, password=pdf_password)
             else:
-                new_rows = _process_debito(pdf_path)
+                new_rows = _process_debito(pdf_path, password=pdf_password)
+        except (PdfminerException, OSError) as e:
+            print(f"  ⚠ {_format_pdf_error(pdf_path, e)}")
+            continue
         except Exception as e:
             print(f"  ⚠ Error al procesar: {e}")
             continue
