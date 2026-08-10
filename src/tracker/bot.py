@@ -136,9 +136,9 @@ def _format_cycle_date(value: datetime) -> str:
     return f"{value.day:02d}/{MONTH_LABELS[value.month]}"
 
 
-def _date_in_current_cycle(value: datetime, today: datetime | None = None) -> bool:
-    start, end = _cycle_bounds(today)
-    return start.date() <= value.date() <= end.date()
+def _date_after_current_cycle(value: datetime, today: datetime | None = None) -> bool:
+    _, end = _cycle_bounds(today)
+    return value.date() > end.date()
 
 
 def _current_cycle_label(today: datetime | None = None) -> str:
@@ -565,10 +565,10 @@ async def handle_expense_flow(update: Update, context: ContextTypes.DEFAULT_TYPE
                 reply_markup=_date_keyboard(),
             )
             return
-        if not _date_in_current_cycle(selected_date):
+        if _date_after_current_cycle(selected_date):
             await update.message.reply_text(
-                f"La fecha {_format_tracker_date(selected_date)} está fuera del ciclo actual "
-                f"({_current_cycle_label()}). Elige otra fecha.",
+                f"La fecha {_format_tracker_date(selected_date)} cae después del ciclo actual "
+                f"({_current_cycle_label()}). Elige una fecha anterior o dentro del ciclo.",
                 reply_markup=_date_keyboard(),
             )
             return
@@ -585,10 +585,10 @@ async def handle_expense_flow(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not parsed:
             await update.message.reply_text("Fecha inválida. Usa YYYY-MM-DD o DD/MM/YYYY.")
             return
-        if not _date_in_current_cycle(parsed):
+        if _date_after_current_cycle(parsed):
             await update.message.reply_text(
-                f"Esa fecha está fuera del ciclo actual ({_current_cycle_label()}). "
-                "Escribe una fecha dentro del ciclo.",
+                f"Esa fecha cae después del ciclo actual ({_current_cycle_label()}). "
+                "Escribe una fecha anterior o dentro del ciclo.",
                 reply_markup=ReplyKeyboardMarkup([[CONFIRM_CANCEL]], resize_keyboard=True, one_time_keyboard=True),
             )
             return
