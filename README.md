@@ -151,7 +151,7 @@ TELEGRAM_CHAT_ID=
 Variables:
 
 - `OPENAI_API_KEY`: clave de API para clasificación con GPT.
-- `OPENAI_MODEL`: modelo a usar para clasificación.
+- `OPENAI_MODEL`: modelo a usar para clasificación y para el chat financiero del dashboard.
 - `OPENAI_API_BASE`: útil si quieres enrutar a otra base compatible.
 - `OPENAI_CATEGORIZE_BATCH`: tamaño de lote por request.
 - `TELEGRAM_TOKEN`: token del bot.

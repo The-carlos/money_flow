@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tracker.categories import backfill_tracker_categories
 from categorizer.rules import auto_category
 from extractor import pipeline
+from dashboard.finance_chat import FinanceChatContext, answer_finance_question
 from dashboard.tracker_diff import (
     build_diff_frame,
     credit_expenses_for_period,
@@ -1205,3 +1206,56 @@ with tab_diff:
                     "Diferencia": st.column_config.NumberColumn("Diferencia", format="$%.2f"),
                 },
             )
+
+
+# ---- CHAT FINANCIERO -------------------------------------------------------
+with st.sidebar:
+    st.divider()
+    st.subheader("Chat MoneyFlow")
+    st.caption("Solo lectura sobre tus datos locales.")
+
+    if "finance_chat_messages" not in st.session_state:
+        st.session_state.finance_chat_messages = []
+
+    if st.button("Limpiar chat", use_container_width=True):
+        st.session_state.finance_chat_messages = []
+
+    for message in st.session_state.finance_chat_messages[-6:]:
+        role = "Tú" if message["role"] == "user" else "MoneyFlow"
+        st.markdown(f"**{role}:** {message['content']}")
+
+    with st.form("finance_chat_form", clear_on_submit=True):
+        question = st.text_area(
+            "Pregunta",
+            placeholder="Ej. ¿Por qué no ha bajado mi deuda total los últimos meses?",
+            height=90,
+        )
+        ask = st.form_submit_button("Preguntar", use_container_width=True)
+
+    if ask and question.strip():
+        chat_ctx = FinanceChatContext(
+            data_dir=DATA_DIR,
+            movements=df_all,
+            credit_metrics=credit_metric_history,
+            tracker_state=_load_track(),
+            tracker_history=_load_tracker_history(),
+        )
+        history_for_model = [
+            {"role": item["role"], "content": item["content"]}
+            for item in st.session_state.finance_chat_messages
+            if item["role"] in ("user", "assistant")
+        ]
+        st.session_state.finance_chat_messages.append({
+            "role": "user",
+            "content": question.strip(),
+        })
+        with st.spinner("Analizando..."):
+            try:
+                answer = answer_finance_question(chat_ctx, history_for_model, question.strip())
+            except RuntimeError as exc:
+                answer = str(exc)
+        st.session_state.finance_chat_messages.append({
+            "role": "assistant",
+            "content": answer,
+        })
+        st.rerun()
