@@ -51,6 +51,7 @@ CONFIRM_CANCEL = "Cancelar"
 GASTO_FLOW_WINDOW = timedelta(minutes=10)
 FREQUENT_CATEGORIES = [
     "Alimentación",
+    "Restaurantes",
     "Transporte",
     "Supermercado y Farmacia",
     "Entretenimiento",
@@ -229,7 +230,8 @@ def _category_keyboard() -> ReplyKeyboardMarkup:
         [CATEGORY_AUTO, CATEGORY_NONE],
         FREQUENT_CATEGORIES[:2],
         FREQUENT_CATEGORIES[2:4],
-        [FREQUENT_CATEGORIES[4], CONFIRM_CANCEL],
+        FREQUENT_CATEGORIES[4:],
+        [CONFIRM_CANCEL],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
 

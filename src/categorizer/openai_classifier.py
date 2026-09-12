@@ -10,6 +10,7 @@ import urllib.request
 
 CATEGORIAS = [
     "Alimentación",
+    "Restaurantes",
     "Supermercado y Farmacia",
     "Transporte",
     "Entretenimiento",
@@ -48,6 +49,7 @@ Reglas:
 - "PAGO DE NOMINA" -> Nómina e Ingresos.
 - "BMOVIL.PAGO TDC" o "PAGO TARJETA DE CREDITO" -> Pago de Tarjeta de Crédito.
 - Movimientos del estilo "06 DE 12" o "A 03 MSI" -> Pago MSI.
+- Restaurantes, cafeterias, taquerias, comida preparada y delivery de comida -> Restaurantes.
 - Uber y viajes similares -> Transporte.
 - Streaming, suscripciones, música, video -> Streaming y Suscripciones Digitales.
 - OpenAI, ChatGPT, Platzi, IPN y similares -> Educación.

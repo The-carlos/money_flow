@@ -22,13 +22,13 @@ def auto_category(descripcion: str, referencia: str = "") -> str:
         # Ahorro e Inversiones sin SPEI explicito
         (r"\b(albo|FONDEADORA|MERCADO.?PAGO|INBURSA|NU.?MEXICO|STORI)\b",
                                                                 "Ahorro e Inversiones"),
-        # Alimentación
-        (r"TACO|REST\b|RESTAUR|UDON|SANBORNS|OXXO|MERPAGO\*COMIDA|TAQUER"
+        # Restaurantes
+        (r"TACO|REST\b|RESTAUR|UDON|SANBORNS|MERPAGO\*COMIDA|TAQUER"
          r"|CAFE\b|CAFETERIA|LATTE|COMIDA|COMFYFOODS|RESTITACATLAN"
          r"|CHEPE|PATIO|LUMEN|ESPERANZA|CIHUACOATL|MINIBOX|APECCAFE"
-         r"|HELADERIA|DESAYUNO",                                "Alimentación"),
+         r"|HELADERIA|DESAYUNO",                                "Restaurantes"),
         # Farmacia / Super
-        (r"FARMACIA|FARM\b|SIMILARES",                          "Supermercado y Farmacia"),
+        (r"FARMACIA|FARM\b|SIMILARES|OXXO",                     "Supermercado y Farmacia"),
         # Mascotas
         (r"PETSHOP|VET\b|FARM ANIMALS",                         "Mascotas"),
         # Transporte
