@@ -3,10 +3,13 @@ Bot de Telegram para trackear gastos del ciclo de TDC.
 
 Comandos:
   /gasto                   → inicia el flujo guiado de registro
-  /status                  → resumen del ciclo actual
+  /status                  → resumen del ciclo actual (incluye MSI y compromisos recurrentes)
   /update-presupuesto 14000 → cambia el presupuesto disponible
   /reset                   → cierra y archiva el ciclo actual
   /cancelar                → cancela el registro guiado actual
+
+Los compromisos recurrentes (renta, suscripciones, etc.) se administran
+desde el dashboard de Streamlit (pestaña "Compromisos"), no desde este bot.
 
 Configuración (variables de entorno o archivo .env):
   TELEGRAM_TOKEN   → token del bot (obtenido de @BotFather)
@@ -34,10 +37,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from tracker.categories import backfill_tracker_categories, classify_tracker_expense
+from tracker.recurrentes import latest_msi_payment_total, load_recurrentes, recurrentes_total
 from tracker.storage import archive_cycle, load_json, save_json
 
 TRACK_PATH   = PROJECT_ROOT / "data" / "processed" / "track_ciclo.json"
 TRACK_HISTORY_DIR = PROJECT_ROOT / "data" / "processed" / "tracker_cycles"
+RECURRENTES_PATH = PROJECT_ROOT / "data" / "processed" / "recurrentes.json"
 
 PRESUPUESTO_DEFAULT = 13168.0
 RESET_CONFIRM_WINDOW = timedelta(minutes=2)
@@ -365,22 +370,30 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     state = _load()
     gastado = _total_gastado(state)
     presupuesto = state["presupuesto"]
-    restante = presupuesto - gastado
-    barra = _barra(gastado, presupuesto)
+    recurrentes_state = load_recurrentes(RECURRENTES_PATH)
+    recurrentes_apartados = recurrentes_total(recurrentes_state)
+    msi_apartado = latest_msi_payment_total(PROJECT_ROOT / "data" / "processed")
+    compromisos = recurrentes_apartados + msi_apartado
+    presupuesto_libre = max(presupuesto - compromisos, 0)
+    restante = presupuesto_libre - gastado
+    barra = _barra(gastado, presupuesto_libre)
     n_gastos = len(state["gastos"])
-    progress = _cycle_progress(datetime.now(), presupuesto, gastado)
+    progress = _cycle_progress(datetime.now(), presupuesto_libre, gastado)
     category_lines = _category_status_lines(state["gastos"], gastado)
-    alert = _status_alert(progress, presupuesto)
+    alert = _status_alert(progress, presupuesto_libre)
 
     texto = (
         "📊 Cómo vamos en el ciclo\n"
         f"{_format_cycle_date(progress['start'])} → {_format_cycle_date(progress['end'])} · "
         f"Día {progress['current_day']}/{progress['total_days']}\n\n"
         f"{barra}\n"
-        f"Gastado:     ${gastado:,.2f}\n"
-        f"Presupuesto: ${presupuesto:,.2f}\n"
-        f"Restante:    ${restante:,.2f}\n"
-        f"Movimientos: {n_gastos}\n\n"
+        f"Presupuesto total: ${presupuesto:,.2f}\n"
+        f"MSI apartados:     ${msi_apartado:,.2f}\n"
+        f"Recurrentes:       ${recurrentes_apartados:,.2f}\n"
+        f"Presupuesto libre: ${presupuesto_libre:,.2f}\n"
+        f"Gasto variable:    ${gastado:,.2f}\n"
+        f"Libre restante:    ${restante:,.2f}\n"
+        f"Movimientos:       {n_gastos}\n\n"
         "Ritmo\n"
         f"Esperado a hoy: ${progress['expected_today']:,.2f}\n"
         f"Real a hoy:     ${gastado:,.2f}\n"
@@ -432,11 +445,13 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     texto = (
         "📖 Comandos disponibles\n\n"
         "/gasto — Inicia el flujo guiado para registrar un gasto\n"
-        "/status — Resumen del ciclo, ritmo de gasto y categorías\n"
+        "/status — Resumen del ciclo, ritmo de gasto, categorías y compromisos recurrentes\n"
         "/update_presupuesto 14000 — Cambia el presupuesto del ciclo\n"
         "/reset — Cierra y archiva el ciclo actual (pide confirmación)\n"
         "/cancelar — Cancela el registro guiado de un gasto\n"
-        "/info — Muestra esta ayuda\n"
+        "/info — Muestra esta ayuda\n\n"
+        "Los compromisos recurrentes (renta, suscripciones, etc.) se administran "
+        "desde el dashboard, pestaña Compromisos.\n"
     )
     await update.message.reply_text(texto)
 

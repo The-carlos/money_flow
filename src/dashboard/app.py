@@ -10,6 +10,7 @@ import hashlib
 import io
 import re
 import sys
+import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -33,13 +34,26 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tracker.categories import backfill_tracker_categories
+from tracker.recurrentes import (
+    active_recurrentes,
+    confirmations_for_cycle,
+    confirmed_total,
+    cycle_id,
+    load_recurrentes,
+    pending_recurrentes,
+    recurrentes_total,
+    save_recurrentes,
+)
+from categorizer.openai_classifier import CATEGORIAS
 from categorizer.rules import auto_category
 from extractor import pipeline
 from dashboard.finance_chat import FinanceChatContext, answer_finance_question
 from dashboard.tracker_diff import (
     build_diff_frame,
     credit_expenses_for_period,
-    match_expenses,
+    match_expenses_with_recurrentes,
+    pending_recurrente_items_for_cycle,
+    recurrente_items_for_cycle,
     style_diff_frame,
     summarize_diff,
     tracker_expenses_for_period,
@@ -47,6 +61,7 @@ from dashboard.tracker_diff import (
 
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
+RECURRENTES_PATH = DATA_DIR / "recurrentes.json"
 
 
 def _safe_upload_name(filename: str, file_hash: str) -> str:
@@ -237,6 +252,11 @@ else:
 
 msi   = load_msi(periodo_key)
 metro = load_metricas(periodo_key)
+recurrentes_state = load_recurrentes(RECURRENTES_PATH)
+current_cycle_id = cycle_id()
+recurrentes_apartados = recurrentes_total(recurrentes_state)
+recurrentes_confirmados_total = confirmed_total(recurrentes_state, current_cycle_id)
+msi_pago_mes_total = msi["pago_requerido"].sum() if "pago_requerido" in msi else 0.0
 
 def _rango(periodos: list[str]) -> str:
     sub = df_all[df_all["periodo"].isin(periodos)]
@@ -344,12 +364,12 @@ msi_filtered = _filter_msi(msi)
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab_res, tab_mov, tab_debito, tab_credito, tab_msi, tab_track, tab_diff = st.tabs([
+tab_res, tab_mov, tab_debito, tab_credito, tab_compromisos, tab_track, tab_diff = st.tabs([
     "📊 Resumen",
     "📋 Movimientos",
     "🏦 Débito",
     "💳 Crédito",
-    "📅 MSI",
+    "📅 Compromisos",
     "🎯 Tracker",
     "Diff",
 ])
@@ -792,13 +812,164 @@ with tab_credito:
         )
         st.plotly_chart(fig_mom, use_container_width=True)
 
-# ---- MSI -------------------------------------------------------------------
-with tab_msi:
-    st.subheader("Deudas a Meses Sin Intereses")
+# ---- COMPROMISOS -----------------------------------------------------------
+with tab_compromisos:
+    st.subheader("Compromisos del ciclo")
 
     monto_original_total = msi_filtered["monto_original"].sum()
     saldo_pendiente_total = msi_filtered["saldo_pendiente"].sum()
     total_pagado_msi = (monto_original_total - saldo_pendiente_total)
+    compromisos_totales = msi_pago_mes_total + recurrentes_apartados
+    recurrentes_pendientes = pending_recurrentes(recurrentes_state, current_cycle_id)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Pago MSI este mes", f"${msi_pago_mes_total:,.2f}")
+    c2.metric("Recurrentes esperados", f"${recurrentes_apartados:,.2f}")
+    c3.metric("Compromisos totales", f"${compromisos_totales:,.2f}")
+    c4.metric("Confirmados", f"${recurrentes_confirmados_total:,.2f}")
+    c5.metric("Pendientes", f"{len(recurrentes_pendientes)}")
+
+    st.divider()
+    st.subheader("Recurrentes manuales")
+    recurrentes_editor = pd.DataFrame(recurrentes_state.get("recurrentes", []))
+    if recurrentes_editor.empty:
+        recurrentes_editor = pd.DataFrame(columns=[
+            "id", "activo", "descripcion", "monto_estimado", "categoria", "dia_estimado",
+        ])
+    recurrentes_editor = recurrentes_editor.reindex(columns=[
+        "id", "activo", "descripcion", "monto_estimado", "categoria", "dia_estimado",
+    ])
+
+    edited_recurrentes = st.data_editor(
+        recurrentes_editor,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "id": None,
+            "activo": st.column_config.CheckboxColumn("Activo", default=True),
+            "descripcion": st.column_config.TextColumn("Descripción", required=True),
+            "monto_estimado": st.column_config.NumberColumn("Monto estimado", min_value=0.0, format="$%.2f"),
+            "categoria": st.column_config.SelectboxColumn("Categoría", options=CATEGORIAS),
+            "dia_estimado": st.column_config.NumberColumn("Día estimado", min_value=1, max_value=31, step=1),
+        },
+        key="recurrentes_editor",
+    )
+
+    if st.button("Guardar recurrentes", use_container_width=True):
+        recurrentes = []
+        errors = []
+        for idx, row in edited_recurrentes.fillna("").iterrows():
+            descripcion = str(row.get("descripcion", "")).strip()
+            if not descripcion:
+                continue
+            monto = pd.to_numeric(row.get("monto_estimado"), errors="coerce")
+            dia = pd.to_numeric(row.get("dia_estimado"), errors="coerce")
+            if pd.isna(monto) or float(monto) < 0:
+                errors.append(f"Fila {idx + 1}: monto estimado inválido.")
+                continue
+            if pd.isna(dia) or int(dia) < 1 or int(dia) > 31:
+                errors.append(f"Fila {idx + 1}: día estimado inválido.")
+                continue
+            recurrentes.append({
+                "id": str(row.get("id") or uuid.uuid4()),
+                "activo": bool(row.get("activo", True)),
+                "descripcion": descripcion,
+                "monto_estimado": float(monto),
+                "categoria": str(row.get("categoria") or "No identificado"),
+                "dia_estimado": int(dia),
+            })
+        if errors:
+            st.error("\n".join(errors))
+        else:
+            recurrentes_state["recurrentes"] = recurrentes
+            recurrentes_state = save_recurrentes(RECURRENTES_PATH, recurrentes_state)
+            st.success("Recurrentes guardados.")
+            st.rerun()
+
+    st.divider()
+    st.subheader("Confirmación del ciclo")
+    active_items = active_recurrentes(recurrentes_state)
+    if not active_items:
+        st.info("No hay recurrentes activos para confirmar.")
+    else:
+        confirmation_by_rec = {
+            item.get("recurrente_id"): item
+            for item in confirmations_for_cycle(recurrentes_state, current_cycle_id)
+        }
+        cycle_start = pd.to_datetime(current_cycle_id.split("__", 1)[0])
+        confirmation_rows = []
+        for item in active_items:
+            confirmation = confirmation_by_rec.get(item["id"], {})
+            dia = int(item.get("dia_estimado") or 1)
+            estimate_base = cycle_start if dia >= 10 else cycle_start + pd.DateOffset(months=1)
+            estimated_date = pd.Timestamp(
+                year=estimate_base.year,
+                month=estimate_base.month,
+                day=min(max(dia, 1), 28),
+            ).date()
+            confirmation_rows.append({
+                "recurrente_id": item["id"],
+                "descripcion": item["descripcion"],
+                "confirmado": bool(confirmation.get("confirmado", False)),
+                "fecha": pd.to_datetime(confirmation.get("fecha"), errors="coerce").date()
+                if confirmation.get("fecha") else estimated_date,
+                "monto_real": float(confirmation.get("monto_real") or item.get("monto_estimado") or 0),
+            })
+
+        confirmations_editor = st.data_editor(
+            pd.DataFrame(confirmation_rows),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "recurrente_id": None,
+                "descripcion": st.column_config.TextColumn("Recurrente", disabled=True),
+                "confirmado": st.column_config.CheckboxColumn("Confirmado"),
+                "fecha": st.column_config.DateColumn("Fecha real"),
+                "monto_real": st.column_config.NumberColumn("Monto real", min_value=0.0, format="$%.2f"),
+            },
+            disabled=["descripcion"],
+            key="recurrentes_confirmaciones_editor",
+        )
+
+        if st.button("Guardar confirmaciones", use_container_width=True):
+            current_ids = {item["id"] for item in active_items}
+            other_confirmations = [
+                item for item in recurrentes_state.get("confirmaciones", [])
+                if item.get("ciclo_id") != current_cycle_id or item.get("recurrente_id") not in current_ids
+            ]
+            new_confirmations = []
+            errors = []
+            for idx, row in confirmations_editor.iterrows():
+                if not bool(row.get("confirmado", False)):
+                    continue
+                fecha = pd.to_datetime(row.get("fecha"), errors="coerce")
+                monto = pd.to_numeric(row.get("monto_real"), errors="coerce")
+                if pd.isna(fecha):
+                    errors.append(f"Fila {idx + 1}: fecha real requerida.")
+                    continue
+                if pd.isna(monto) or float(monto) < 0:
+                    errors.append(f"Fila {idx + 1}: monto real inválido.")
+                    continue
+                existing = confirmation_by_rec.get(row["recurrente_id"], {})
+                new_confirmations.append({
+                    "id": str(existing.get("id") or uuid.uuid4()),
+                    "recurrente_id": row["recurrente_id"],
+                    "ciclo_id": current_cycle_id,
+                    "confirmado": True,
+                    "fecha": fecha.date().isoformat(),
+                    "monto_real": float(monto),
+                })
+            if errors:
+                st.error("\n".join(errors))
+            else:
+                recurrentes_state["confirmaciones"] = other_confirmations + new_confirmations
+                recurrentes_state = save_recurrentes(RECURRENTES_PATH, recurrentes_state)
+                st.success("Confirmaciones guardadas.")
+                st.rerun()
+
+    st.divider()
+    st.subheader("MSI detectados")
 
     t1, t2, t3, t4 = st.columns(4)
     t1.metric("Monto Original Total",  f"${monto_original_total:,.2f}")
@@ -942,6 +1113,22 @@ def _tracker_periods(current_track: dict, history: list[dict]) -> list[dict]:
     return periods
 
 
+def _ciclo_id_for_period(period: dict) -> str:
+    if period["is_current"]:
+        return current_cycle_id
+
+    state = period["state"]
+    anchor = state.get("ciclo_inicio") or state.get("primer_gasto")
+    if not anchor:
+        return current_cycle_id
+
+    anchor_dt = pd.to_datetime(anchor, errors="coerce")
+    if pd.isna(anchor_dt):
+        return current_cycle_id
+
+    return cycle_id(anchor_dt.to_pydatetime())
+
+
 def _tracker_period_summary(periods: list[dict]) -> pd.DataFrame:
     rows = []
     for period in reversed(periods):
@@ -976,14 +1163,18 @@ with tab_track:
     gastos       = track.get("gastos", [])
     ciclo_inicio = track.get("ciclo_inicio", "—")
     total_gasto  = sum(g["monto"] for g in gastos)
-    restante     = presupuesto - total_gasto
-    pct_usado    = (total_gasto / presupuesto * 100) if presupuesto else 0
+    compromisos_apartados = msi_pago_mes_total + recurrentes_apartados
+    presupuesto_libre = max(presupuesto - compromisos_apartados, 0)
+    restante     = presupuesto_libre - total_gasto
+    pct_usado    = (total_gasto / presupuesto_libre * 100) if presupuesto_libre else 0
 
     # Header del tracker
-    tr1, tr2, tr3 = st.columns(3)
-    tr1.metric("Presupuesto del ciclo", f"${presupuesto:,.2f}")
-    tr2.metric("Gastado (tracker)", f"${total_gasto:,.2f}", f"{pct_usado:.1f}% usado", delta_color="inverse")
-    tr3.metric("Disponible", f"${restante:,.2f}", delta_color="normal")
+    tr1, tr2, tr3, tr4, tr5 = st.columns(5)
+    tr1.metric("Presupuesto total", f"${presupuesto:,.2f}")
+    tr2.metric("Compromisos", f"${compromisos_apartados:,.2f}")
+    tr3.metric("Presupuesto libre", f"${presupuesto_libre:,.2f}")
+    tr4.metric("Gasto variable", f"${total_gasto:,.2f}", f"{pct_usado:.1f}% usado", delta_color="inverse")
+    tr5.metric("Libre restante", f"${restante:,.2f}", delta_color="normal")
 
     if is_current_period and pct_usado >= 100:
         st.error("🚨 Presupuesto excedido")
@@ -1160,13 +1351,18 @@ with tab_diff:
         st.info("No hay periodos del tracker disponibles para comparar.")
     else:
         statement_items = credit_expenses_for_period(df_all, diff_credit_period)
-        tracker_items = tracker_expenses_for_period(
-            diff_tracker_period,
-            _tracker_label(diff_tracker_period),
-        )
-        matches = match_expenses(
+        diff_tracker_label = _tracker_label(diff_tracker_period)
+        tracker_items = tracker_expenses_for_period(diff_tracker_period, diff_tracker_label)
+
+        diff_ciclo_id = _ciclo_id_for_period(diff_tracker_period)
+        recurrente_items = recurrente_items_for_cycle(recurrentes_state, diff_ciclo_id, diff_tracker_label)
+        pending_items = pending_recurrente_items_for_cycle(recurrentes_state, diff_ciclo_id, diff_tracker_label)
+
+        matches = match_expenses_with_recurrentes(
             statement_items,
             tracker_items,
+            recurrente_items,
+            pending_items,
             date_tolerance_days=int(date_tolerance),
             amount_tolerance=float(amount_tolerance),
         )
@@ -1174,27 +1370,33 @@ with tab_diff:
         summary = summarize_diff(diff_df)
 
         met1, met2, met3, met4, met5 = st.columns(5)
-        met1.metric("Matches", f"{summary['matched_count']}", f"${summary['matched_amount']:,.2f}")
-        met2.metric("Solo estado", f"{summary['statement_only_count']}", f"${summary['statement_only_amount']:,.2f}", delta_color="inverse")
-        met3.metric("Solo tracker", f"{summary['tracker_only_count']}", f"${summary['tracker_only_amount']:,.2f}", delta_color="inverse")
-        met4.metric("Estado total", f"${sum(item.monto for item in statement_items):,.2f}")
-        met5.metric("Tracker total", f"${sum(item.monto for item in tracker_items):,.2f}")
+        met1.metric("Match tracker", f"{summary['matched_tracker_count']}", f"${summary['matched_tracker_amount']:,.2f}")
+        met2.metric("Match recurrente", f"{summary['matched_recurrente_count']}", f"${summary['matched_recurrente_amount']:,.2f}")
+        met3.metric("Solo estado", f"{summary['statement_only_count']}", f"${summary['statement_only_amount']:,.2f}", delta_color="inverse")
+        met4.metric("Solo tracker", f"{summary['tracker_only_count']}", f"${summary['tracker_only_amount']:,.2f}", delta_color="inverse")
+        met5.metric("Recurrentes pendientes", f"{summary['recurrente_pending_count']}", f"${summary['recurrente_pending_amount']:,.2f}", delta_color="inverse")
+
+        met6, met7 = st.columns(2)
+        met6.metric("Estado total", f"${sum(item.monto for item in statement_items):,.2f}")
+        met7.metric("Tracker total", f"${sum(item.monto for item in tracker_items):,.2f}")
 
         if diff_df.empty:
             st.info("No hay movimientos para comparar con los periodos seleccionados.")
         else:
             status_filter = st.radio(
                 "Mostrar",
-                ["Todos", "Matches", "Diferencias"],
+                ["Todos", "Matches", "Pendientes recurrentes", "Diferencias"],
                 index=0,
                 horizontal=True,
                 key="diff_status_filter",
             )
             display_df = diff_df.copy()
             if status_filter == "Matches":
-                display_df = display_df[display_df["status"] == "match"]
+                display_df = display_df[display_df["status"].isin(["match_tracker", "match_recurrente"])]
+            elif status_filter == "Pendientes recurrentes":
+                display_df = display_df[display_df["status"] == "recurrente_pendiente"]
             elif status_filter == "Diferencias":
-                display_df = display_df[display_df["status"] != "match"]
+                display_df = display_df[display_df["status"].isin(["estado_only", "tracker_only", "recurrente_pendiente"])]
 
             st.dataframe(
                 style_diff_frame(display_df),
@@ -1202,7 +1404,7 @@ with tab_diff:
                 hide_index=True,
                 column_config={
                     "Estado Monto": st.column_config.NumberColumn("Estado Monto", format="$%.2f"),
-                    "Tracker Monto": st.column_config.NumberColumn("Tracker Monto", format="$%.2f"),
+                    "Esperado Monto": st.column_config.NumberColumn("Esperado Monto", format="$%.2f"),
                     "Diferencia": st.column_config.NumberColumn("Diferencia", format="$%.2f"),
                 },
             )
