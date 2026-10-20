@@ -10,4 +10,4 @@
 ## 3. Documentación y verificación end-to-end
 
 - [x] 3.1 Actualizar el docstring de `bot.py`, el texto de `/info` y la sección del tracker en `README.md` para explicar que `/status` se calcula al último gasto registrado. Verificar leyendo el diff.
-- [ ] 3.2 Probar end-to-end: reiniciar el bot, ejecutar `/status` en Telegram con el ciclo actual atrasado y confirmar que muestra "10/sep → 09/oct · Día 24/30", la línea "Al último registro: 03/oct" y una proyección consistente con la spec (paso manual del usuario, en la máquina donde corre el bot).
+- [x] 3.2 Probar end-to-end: reiniciar el bot, ejecutar `/status` en Telegram con el ciclo actual atrasado y confirmar que muestra "10/sep → 09/oct · Día 24/30", la línea "Al último registro: 03/oct" y una proyección consistente con la spec (paso manual del usuario, en la máquina donde corre el bot).
