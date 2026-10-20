@@ -3,7 +3,8 @@ Bot de Telegram para trackear gastos del ciclo de TDC.
 
 Comandos:
   /gasto                   → inicia el flujo guiado de registro
-  /status                  → resumen del ciclo actual (incluye MSI y compromisos recurrentes)
+  /status                  → resumen del ciclo (incluye MSI y compromisos recurrentes), calculado
+                             a la fecha del último gasto registrado (o a hoy si no hay gastos)
   /update-presupuesto 14000 → cambia el presupuesto disponible
   /reset                   → cierra y archiva el ciclo actual
   /cancelar                → cancela el registro guiado actual
@@ -150,6 +151,24 @@ def _date_after_current_cycle(value: datetime, today: datetime | None = None) ->
 def _current_cycle_label(today: datetime | None = None) -> str:
     start, end = _cycle_bounds(today)
     return f"{_format_cycle_date(start)} → {_format_cycle_date(end)}"
+
+
+def _status_reference_date(gastos: list[dict], today: datetime | None = None) -> tuple[datetime, bool]:
+    """Fecha del gasto más reciente (acotada a hoy); hoy si no hay gastos válidos.
+
+    Devuelve (fecha, viene_de_gasto). El tracker se registra con atraso, así que
+    /status se calcula al avance real del registro y no al reloj.
+    """
+    today = today or datetime.now()
+    fechas = []
+    for gasto in gastos:
+        try:
+            fechas.append(datetime.fromisoformat(str(gasto.get("fecha", ""))))
+        except ValueError:
+            continue
+    if not fechas or max(fechas) > today:
+        return today, False
+    return max(fechas), True
 
 
 def _cycle_progress(today: datetime, presupuesto: float, gastado: float) -> dict:
@@ -378,14 +397,17 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     restante = presupuesto_libre - gastado
     barra = _barra(gastado, presupuesto_libre)
     n_gastos = len(state["gastos"])
-    progress = _cycle_progress(datetime.now(), presupuesto_libre, gastado)
+    referencia, desde_gasto = _status_reference_date(state["gastos"])
+    corte = "Al último registro" if desde_gasto else "A hoy"
+    progress = _cycle_progress(referencia, presupuesto_libre, gastado)
     category_lines = _category_status_lines(state["gastos"], gastado)
     alert = _status_alert(progress, presupuesto_libre)
 
     texto = (
         "📊 Cómo vamos en el ciclo\n"
         f"{_format_cycle_date(progress['start'])} → {_format_cycle_date(progress['end'])} · "
-        f"Día {progress['current_day']}/{progress['total_days']}\n\n"
+        f"Día {progress['current_day']}/{progress['total_days']}\n"
+        f"{corte}: {_format_cycle_date(referencia)}\n\n"
         f"{barra}\n"
         f"Presupuesto total: ${presupuesto:,.2f}\n"
         f"MSI apartados:     ${msi_apartado:,.2f}\n"
@@ -395,10 +417,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"Libre restante:    ${restante:,.2f}\n"
         f"Movimientos:       {n_gastos}\n\n"
         "Ritmo\n"
-        f"Esperado a hoy: ${progress['expected_today']:,.2f}\n"
-        f"Real a hoy:     ${gastado:,.2f}\n"
-        f"Diferencia:     ${progress['difference']:+,.2f}\n"
-        f"Proyección:     ${progress['projected']:,.2f}\n\n"
+        f"Esperado al corte: ${progress['expected_today']:,.2f}\n"
+        f"Real al corte:     ${gastado:,.2f}\n"
+        f"Diferencia:        ${progress['difference']:+,.2f}\n"
+        f"Proyección:        ${progress['projected']:,.2f}\n\n"
         "Presupuesto\n"
         f"Diario:  ${progress['daily_budget']:,.2f}\n"
         f"Semanal: ${progress['weekly_budget']:,.2f}\n"
@@ -445,7 +467,8 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     texto = (
         "📖 Comandos disponibles\n\n"
         "/gasto — Inicia el flujo guiado para registrar un gasto\n"
-        "/status — Resumen del ciclo, ritmo de gasto, categorías y compromisos recurrentes\n"
+        "/status — Resumen del ciclo, ritmo de gasto, categorías y compromisos recurrentes, "
+        "calculado a la fecha de tu último gasto registrado\n"
         "/update_presupuesto 14000 — Cambia el presupuesto del ciclo\n"
         "/reset — Cierra y archiva el ciclo actual (pide confirmación)\n"
         "/cancelar — Cancela el registro guiado de un gasto\n"

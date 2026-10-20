@@ -114,10 +114,12 @@ El bot de `src/tracker/bot.py` sirve para registrar gastos manuales del ciclo de
 
 Comandos principales:
 
-- `/gasto 350 Uber`
+- `/gasto` (flujo guiado: monto, descripción, fecha, categoría y confirmación)
 - `/status`
 - `/update_presupuesto 14000`
 - `/reset`
+
+`/status` calcula el ciclo, el día del ciclo, el ritmo y la proyección a la fecha del último gasto registrado, no a la fecha de hoy. Así, si el registro va atrasado, las métricas siguen tu avance real. Sin gastos (por ejemplo, tras `/reset`) usa la fecha de hoy. El mensaje indica la fecha de corte usada.
 
 ## Requisitos
 
